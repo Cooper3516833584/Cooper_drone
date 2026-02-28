@@ -1,0 +1,23 @@
+[Unit]
+Description=Drone Mission Control Framework
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/drone_mission
+ExecStart=/home/pi/drone_env/bin/python -m src.main --config config/vehicle.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# 环境变量（可选：从 .env 加载）
+# EnvironmentFile=/home/pi/drone_mission/.env
+
+# 串口权限
+SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target

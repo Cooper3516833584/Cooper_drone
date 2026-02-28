@@ -1,0 +1,49 @@
+# ============================================================
+# drone_mission 全局配置文件
+# 所有常量必须从此文件读取，不允许在代码中硬编码
+# 环境变量可覆盖此处的值（参见 .env.example）
+# ============================================================
+
+mavlink:
+  port: "/dev/ttyAMA0"          # 树莓派 UART 串口
+  baud: 115200                  # 波特率
+  connect_timeout_s: 30         # 连接超时（秒）
+  retry_interval_s: 5           # 重连间隔（秒）
+  max_retries: 5                # 最大重试次数
+
+rc:
+  mode_channel: 5               # CH5：飞行模式/接管开关
+  kill_channel: 8               # CH7/8：紧急停桨
+  guided_pwm_min: 1700          # CH5 PWM >= 此值视为允许上位机接管 (Guided)
+  kill_pwm_min: 1700            # CH8 PWM >= 此值视为触发紧急停桨
+
+limits:
+  takeoff_alt_m: 2.0            # 默认起飞高度（米）
+  max_xy_vel_mps: 2.0           # 水平最大速度（m/s）
+  max_z_vel_mps: 1.0            # 垂直最大速度（m/s）
+  max_yaw_rate_dps: 45.0        # 最大偏航角速度（°/s）
+  position_tolerance_m: 0.5     # 到点判定容差（米）
+  altitude_tolerance_m: 0.3     # 高度到达容差（米）
+
+failsafe:
+  link_lost_action: "LAND"      # 断链策略：LAND / LOITER
+  heartbeat_timeout_s: 3.0      # 心跳超时阈值（秒）
+  link_lost_timeout_s: 5.0      # 链路丢失判定阈值（秒）
+
+vision:
+  camera_index_or_path: 0       # 摄像头设备号或视频文件路径
+  frame_width: 640
+  frame_height: 480
+  stream:
+    host: "0.0.0.0"
+    port: 5000
+    fps: 15
+
+telemetry:
+  sample_rate_hz: 5             # 遥测采样频率
+
+logging:
+  level: "INFO"                 # DEBUG / INFO / WARNING / ERROR
+  dir: "logs"                   # 日志输出目录
+  max_bytes: 10485760           # 单个日志文件大小上限 10MB
+  backup_count: 5               # 滚动备份数量

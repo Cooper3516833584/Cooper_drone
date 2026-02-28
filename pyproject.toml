@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "drone-mission"
+version = "0.1.0"
+description = "树莓派 4B 无人机上位机控制框架 (ArduCopter + MAVLink)"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    "dronekit>=2.9.2",
+    "pymavlink>=2.4.40",
+    "opencv-python-headless>=4.8",
+    "flask>=3.0",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
