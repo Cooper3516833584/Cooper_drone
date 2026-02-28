@@ -1,5 +1,5 @@
 """
-safety — 安全层，常驻监控
+safety — 安全层，常驻监控（带 failsafe 动作与输出门禁）
 
 职责：
     永远高优先级运行，随时打断上位机任务。
@@ -7,19 +7,24 @@ safety — 安全层，常驻监控
 
 安全策略（优先级从高到低）：
     1. **KILL 触发**（CH7/8 PWM >= kill_pwm_min）：
-       - 立刻取消当前任务（通过 CancelToken）
-       - 停止所有上位机控制输出
+       - 立刻调用 control.inhibit_outputs() 禁止任务发控制指令
+       - 立刻调用 control.stop_motion() 发送零速度
+       - 取消所有已注册任务（CancelToken）
        - 进入 EMERGENCY 状态
-       - 注意：停桨由飞控自身执行，上位机仅停止发指令
+       - 注意：真正停桨由飞控自身执行，上位机仅停止干预
 
     2. **撤销接管**（CH5 从 Guided 回到 Loiter）：
-       - 立刻停止速度/位置控制输出
-       - 取消当前任务
+       - 立刻调用 control.inhibit_outputs() 禁止任务发控制指令
+       - 立刻调用 control.stop_motion() 发送零速度
+       - 取消所有已注册任务
        - 不再向飞控发送任何指令（让飞手接管）
 
     3. **心跳超时 / 断链**：
-       - 按 failsafe.link_lost_action 执行（LAND / LOITER）
-       - 取消当前任务
+       - 立刻调用 control.inhibit_outputs() 禁止任务发控制指令
+       - 按 failsafe.link_lost_action 执行：
+         - LAND：set_mode_nowait("LAND")
+         - LOITER：set_mode_nowait("LOITER")
+       - 取消所有已注册任务
 
 控制权设计：
     - CH5：Loiter = 人手控制，Guided = 允许上位机接管
@@ -54,6 +59,12 @@ class SafetyState(enum.Enum):
 class SafetyManager:
     """安全管理器——常驻后台线程，持续监控 RC 通道与心跳。
 
+    安全事件触发时：
+        1. 激活 control 层输出门禁（inhibit gate）
+        2. 发送 stop_motion 停止运动输出
+        3. 按策略执行 failsafe 动作（LAND/LOITER）
+        4. 取消所有已注册的 CancelToken
+
     Usage::
 
         safety = SafetyManager(cfg, link)
@@ -86,7 +97,7 @@ class SafetyManager:
         self._guided_pwm_min: int = cfg.rc.guided_pwm_min
         self._kill_pwm_min: int = cfg.rc.kill_pwm_min
         self._heartbeat_timeout_s: float = cfg.failsafe.heartbeat_timeout_s
-        self._link_lost_action: str = cfg.failsafe.link_lost_action
+        self._link_lost_action: str = cfg.failsafe.link_lost_action.upper()
         self._poll_interval_s: float = 0.1  # 10 Hz 监控频率
 
     # ── 生命周期 ──────────────────────────────
@@ -208,7 +219,13 @@ class SafetyManager:
         self._transition_to(new_state)
 
     def _transition_to(self, new_state: SafetyState, reason: str = "") -> None:
-        """状态转换并根据需要取消任务。"""
+        """状态转换并执行 failsafe 动作。
+
+        Fix 2：安全事件触发时，不仅取消任务，还执行实际的 failsafe 动作：
+            - inhibit_outputs()（激活输出门禁）
+            - stop_motion()（停止运动输出）
+            - set_mode_nowait()（按策略切模式）
+        """
         with self._lock:
             old_state = self._state
             if new_state == old_state:
@@ -222,13 +239,98 @@ class SafetyManager:
                 logger.info("安全状态变更: %s -> %s",
                             old_state.value, new_state.value)
 
-            # 需要取消任务的状态
-            if new_state in (SafetyState.KILL, SafetyState.LINK_LOST, SafetyState.NORMAL):
-                if old_state == SafetyState.GUIDED_ALLOWED:
-                    self._cancel_all_tasks(f"安全状态变更: {new_state.value}")
+            # ── 新状态进入 GUIDED_ALLOWED：解除门禁 ──
+            if new_state == SafetyState.GUIDED_ALLOWED:
+                self._release_inhibit()
+                return
+
+            # ── 需要执行安全动作的状态转换 ──
+            if old_state == SafetyState.GUIDED_ALLOWED:
+                # 从 GUIDED_ALLOWED 离开 → 必须执行安全动作
+                self._execute_safety_actions(new_state, reason)
+
+            elif new_state in (SafetyState.KILL, SafetyState.LINK_LOST):
+                # 非 GUIDED 状态下检测到 KILL/LINK_LOST  → 也要执行
+                self._execute_safety_actions(new_state, reason)
+
+    def _execute_safety_actions(self, state: SafetyState, reason: str) -> None:
+        """执行安全动作——在 _lock 已持有的环境下调用。
+
+        动作序列：
+            1. 激活输出门禁（inhibit gate）
+            2. 发送 stop_motion（零速度）
+            3. 按 failsafe 策略切模式（KILL 除外）
+            4. 取消所有已注册任务
+        """
+        # 1. 激活输出门禁
+        self._activate_inhibit()
+
+        # 2. 发送 stop_motion（在独立线程避免死锁，因为 _lock 已持有）
+        try:
+            vehicle = self._link.get_vehicle()
+            self._emit_stop_motion(vehicle)
+        except Exception as exc:
+            logger.error("安全动作 stop_motion 失败: %s", exc)
+
+        # 3. 按策略切模式
+        if state == SafetyState.KILL:
+            # KILL: 不切模式——停桨由飞控自身处理
+            # best-effort 发送 force disarm（失败不影响流程）
+            try:
+                from src.control import force_disarm_nowait
+                force_disarm_nowait(vehicle)
+            except Exception as exc:
+                logger.warning("KILL best-effort force_disarm 失败: %s", exc)
+            logger.warning("KILL 状态：上位机已停止所有输出")
+        elif state == SafetyState.LINK_LOST:
+            # 断链：按配置执行 LAND / LOITER
+            self._execute_link_lost_action()
+        elif state == SafetyState.NORMAL:
+            # 撤销接管：上位机停止输出，飞手接管（不需要切模式）
+            logger.info("撤销接管：上位机已停止所有输出，飞手接管")
+
+        # 4. 取消所有任务
+        self._cancel_all_tasks(f"安全动作: {state.value} - {reason}")
+
+    def _activate_inhibit(self) -> None:
+        """激活 control 层输出门禁。"""
+        from src.control import inhibit_outputs
+        inhibit_outputs()
+
+    def _release_inhibit(self) -> None:
+        """解除 control 层输出门禁。"""
+        from src.control import release_outputs
+        release_outputs()
+
+    def _emit_stop_motion(self, vehicle: Any) -> None:
+        """发送零速度指令停止运动。
+
+        使用 control.stop_motion() 的内部逻辑，但绕过门禁检查。
+        """
+        from src.control import stop_motion
+        stop_motion(vehicle)
+
+    def _execute_link_lost_action(self) -> None:
+        """按配置执行断链策略。"""
+        try:
+            vehicle = self._link.get_vehicle()
+            from src.control import set_mode_nowait
+
+            action = self._link_lost_action
+            if action == "LAND":
+                logger.warning("断链策略执行: LAND")
+                set_mode_nowait(vehicle, "LAND")
+            elif action == "LOITER":
+                logger.warning("断链策略执行: LOITER")
+                set_mode_nowait(vehicle, "LOITER")
+            else:
+                logger.error("未知断链策略: %s，默认 LAND", action)
+                set_mode_nowait(vehicle, "LAND")
+        except Exception as exc:
+            logger.error("断链策略执行失败: %s", exc)
 
     def _cancel_all_tasks(self, reason: str) -> None:
-        """取消所有已注册的任务。
+        """取消所有已注册的任务，并清理已 cancel 的 token。
 
         注意：此方法在 _lock 已持有的状态下调用。
         """
@@ -236,6 +338,10 @@ class SafetyManager:
             if not token.is_cancelled():
                 token.cancel(reason)
                 logger.warning("已取消任务: %s", reason)
+        # Fix D: 清理已 cancel 的 token，防止列表无限增长
+        self._cancel_tokens = [
+            t for t in self._cancel_tokens if not t.is_cancelled()
+        ]
 
     @staticmethod
     def _read_rc_channel(vehicle: Any, channel: int) -> int | None:

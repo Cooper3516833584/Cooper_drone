@@ -32,7 +32,7 @@ fi
 cd "$PROJECT_DIR"
 
 # ── 启动 ──────────────────────────────────────
-echo "启动无人机控制框架…"
+echo "启动无人机控制框架..."
 python -m src.main \
     --config config/vehicle.yaml \
     "$@"

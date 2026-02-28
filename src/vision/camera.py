@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 class CameraSource:
     """摄像头采集源——后台线程持续采集，帧缓存。
 
+    当摄像头不可用时，不会抛出异常，而是生成黑色占位帧，
+    确保推流端口仍可正常启动并返回画面。
+
     Usage::
 
         cam = CameraSource(cfg)
@@ -49,6 +52,7 @@ class CameraSource:
         self._height = cfg.vision.frame_height
 
         self._cap: cv2.VideoCapture | None = None
+        self._camera_ok: bool = False
         self._frame: np.ndarray | None = None
         self._lock = threading.Lock()
         self._running = False
@@ -59,8 +63,8 @@ class CameraSource:
     def start(self) -> None:
         """启动摄像头采集线程。
 
-        Raises:
-            RuntimeError: 摄像头无法打开。
+        摄像头打不开时不会抛出异常，而是回退到占位黑帧模式，
+        确保推流仍可正常启动。
         """
         if self._running:
             return
@@ -71,10 +75,15 @@ class CameraSource:
 
         self._cap = cv2.VideoCapture(source if isinstance(source, str) else int(source))
         if not self._cap.isOpened():
-            raise RuntimeError(f"无法打开摄像头: {source}")
-
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+            logger.warning("无法打开摄像头: %s — 回退到占位黑帧模式", source)
+            self._camera_ok = False
+            if self._cap is not None:
+                self._cap.release()
+                self._cap = None
+        else:
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+            self._camera_ok = True
 
         self._running = True
         self._thread = threading.Thread(
@@ -83,7 +92,10 @@ class CameraSource:
             daemon=True,
         )
         self._thread.start()
-        logger.info("摄像头采集已启动")
+        if self._camera_ok:
+            logger.info("摄像头采集已启动")
+        else:
+            logger.info("摄像头采集已启动（占位黑帧模式）")
 
     def stop(self) -> None:
         """停止摄像头采集并释放资源。"""
@@ -111,11 +123,29 @@ class CameraSource:
         """摄像头是否正在采集。"""
         return self._running
 
+    @property
+    def camera_ok(self) -> bool:
+        """摄像头是否真正打开（非占位模式）。"""
+        return self._camera_ok
+
     # ── 内部采集循环 ──────────────────────────
 
     def _capture_loop(self) -> None:
-        """后台采集主循环。"""
+        """后台采集主循环。
+
+        摄像头正常时从设备读取帧；摄像头不可用时生成黑色占位帧。
+        """
         while self._running:
+            if not self._camera_ok:
+                # 生成黑色占位帧
+                placeholder = np.zeros(
+                    (self._height, self._width, 3), dtype=np.uint8,
+                )
+                with self._lock:
+                    self._frame = placeholder
+                time.sleep(0.1)  # 占位模式 ~10 fps
+                continue
+
             if self._cap is None or not self._cap.isOpened():
                 time.sleep(0.1)
                 continue

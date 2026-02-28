@@ -8,7 +8,7 @@ stream_flask — Flask MJPEG 视频推流
 设计原则：
     - 推流读取帧缓存（CameraSource.latest_frame），不直接操作摄像头
     - 推流不能阻塞飞控——Flask 运行在独立线程中
-    - 帧率可配（通过 vehicle.yaml → vision.stream.fps）
+    - Fix 5：帧率从配置读取并传递到 generator
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def create_app(camera_source: CameraSource) -> Flask:
+def create_app(camera_source: CameraSource, fps: int = 15) -> Flask:
     """创建 Flask MJPEG 推流应用。
 
     路由：
@@ -37,12 +37,14 @@ def create_app(camera_source: CameraSource) -> Flask:
 
     Args:
         camera_source: CameraSource 实例（帧来源）。
+        fps:           推流帧率（Fix 5：从配置传入）。
 
     Returns:
         Flask 应用实例。
     """
     app = Flask(__name__)
     app.config["camera_source"] = camera_source
+    app.config["stream_fps"] = fps
 
     @app.route("/")
     def index():
@@ -60,8 +62,9 @@ def create_app(camera_source: CameraSource) -> Flask:
     @app.route("/video_feed")
     def video_feed():
         """MJPEG 视频流端点。"""
+        stream_fps = app.config.get("stream_fps", 15)
         return Response(
-            _generate_frames(camera_source),
+            _generate_frames(camera_source, fps=stream_fps),
             mimetype="multipart/x-mixed-replace; boundary=frame",
         )
 
@@ -105,17 +108,20 @@ def run_stream_server(
     此函数会创建一个 daemon 线程运行 Flask，
     不会阻塞调用方线程。
 
+    Fix 5：将 cfg.vision.stream.fps 传递给 create_app。
+
     Args:
         camera_source: CameraSource 实例。
         cfg:           全局配置实例。
     """
     host = cfg.vision.stream.host
     port = cfg.vision.stream.port
+    fps = cfg.vision.stream.fps
 
-    app = create_app(camera_source)
+    app = create_app(camera_source, fps=fps)
 
     def _run():
-        logger.info("Flask 推流服务启动  http://%s:%d", host, port)
+        logger.info("Flask 推流服务启动  http://%s:%d  fps=%d", host, port, fps)
         app.run(host=host, port=port, threaded=True, use_reloader=False)
 
     thread = threading.Thread(target=_run, name="FlaskStream", daemon=True)

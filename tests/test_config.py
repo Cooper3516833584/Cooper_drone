@@ -22,7 +22,11 @@ def test_load_default_config():
     assert cfg.limits.takeoff_alt_m == 2.0
     assert cfg.failsafe.link_lost_action == "LAND"
     assert cfg.vision.stream.port == 5000
+    assert cfg.vision.stream.enabled is False
     assert cfg.logging.level == "INFO"
+
+    # Fix 7: link_lost_timeout_s should not exist
+    assert not hasattr(cfg.failsafe, "link_lost_timeout_s")
 
     print("[PASS] test_load_default_config")
 
@@ -49,7 +53,6 @@ def test_config_fields():
 
     # FailsafeConfig
     _ = cfg.failsafe.heartbeat_timeout_s
-    _ = cfg.failsafe.link_lost_timeout_s
 
     # VisionConfig
     _ = cfg.vision.camera_index_or_path
@@ -57,6 +60,7 @@ def test_config_fields():
     _ = cfg.vision.frame_height
     _ = cfg.vision.stream.host
     _ = cfg.vision.stream.fps
+    _ = cfg.vision.stream.enabled
 
     # TelemetryConfig
     _ = cfg.telemetry.sample_rate_hz

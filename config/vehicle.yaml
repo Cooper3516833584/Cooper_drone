@@ -28,13 +28,13 @@ limits:
 failsafe:
   link_lost_action: "LAND"      # 断链策略：LAND / LOITER
   heartbeat_timeout_s: 3.0      # 心跳超时阈值（秒）
-  link_lost_timeout_s: 5.0      # 链路丢失判定阈值（秒）
 
 vision:
   camera_index_or_path: 0       # 摄像头设备号或视频文件路径
   frame_width: 640
   frame_height: 480
   stream:
+    enabled: false              # 是否启用推流（CLI --enable-stream 也可开启）
     host: "0.0.0.0"
     port: 5000
     fps: 15

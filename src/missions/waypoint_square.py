@@ -6,7 +6,7 @@ waypoint_square — 正方形航点飞行任务（占位）
     2. run:    以当前位置为中心，依次飞往 4 个正方形顶点
                每段飞行调用 control.goto_global()
                每段之间检查 token.is_cancelled()
-    3. teardown: control.stop_motion() → 回到起点 → 可选 land
+    3. teardown: control.stop_motion() -> 回到起点 -> 可选 land
 
 使用的控制原语：
     - control.set_mode("GUIDED")

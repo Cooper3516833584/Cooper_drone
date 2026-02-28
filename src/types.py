@@ -7,6 +7,7 @@ types — 共享数据结构
 
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import dataclass, field
 
@@ -51,6 +52,10 @@ class VehicleSnapshot:
     gps_num_sat: int = 0
     ekf_ok: bool = False
     rc_channels: dict[int, int] = field(default_factory=dict)
+
+    def copy(self) -> VehicleSnapshot:
+        """返回深拷贝，防止外部修改内部状态。"""
+        return copy.deepcopy(self)
 
 
 @dataclass

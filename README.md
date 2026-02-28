@@ -8,19 +8,19 @@
 |------|------|
 | 上位机 | 树莓派 4B (2GB), Raspberry Pi OS Lite 64-bit, 无桌面 |
 | 飞控   | Matek H743 Slim V3, 刷 ArduCopter |
-| 通信   | 树莓派 UART ↔ 飞控 UART, MAVLink 协议 |
+| 通信   | 树莓派 UART <-> 飞控 UART, MAVLink 协议 |
 
 ## 接线说明
 
 ```
-树莓派 GPIO14 (TX) ──→ 飞控 RX (UART)
-树莓派 GPIO15 (RX) ←── 飞控 TX (UART)
-共地 GND ────────────── GND
+树莓派 GPIO14 (TX) --> 飞控 RX (UART)
+树莓派 GPIO15 (RX) <-- 飞控 TX (UART)
+共地 GND --------------- GND
 ```
 
-> ⚠️ **串口配置提醒**：树莓派需禁用串口控制台并启用硬件 UART：
+> **串口配置提醒**：树莓派需禁用串口控制台并启用硬件 UART：
 > ```bash
-> sudo raspi-config  # Interface Options → Serial Port → No login shell, Yes hardware
+> sudo raspi-config  # Interface Options -> Serial Port -> No login shell, Yes hardware
 > ```
 > 确认 `/dev/ttyAMA0` 可用（而非 `/dev/ttyS0` mini UART）。
 
@@ -28,8 +28,18 @@
 
 | 通道 | 功能 | PWM 含义 |
 |------|------|----------|
-| CH5  | 飞行模式/接管开关 | ≥ 1700 = 允许上位机接管 (Guided)，< 1700 = 人手 (Loiter) |
-| CH7/8 | 紧急停桨 | ≥ 1700 = 紧急停桨（最高优先级，上位机立刻停止控制） |
+| CH5  | 飞行模式/接管开关 | >= 1700 = 允许上位机接管 (Guided)，< 1700 = 人手 (Loiter) |
+| CH7/8 | 紧急停桨 | >= 1700 = 紧急停桨（最高优先级，上位机立刻停止控制） |
+
+## 安全设计
+
+1. **KILL 最高优先级**：CH7/8 触发后，上位机立刻激活输出门禁 + 停止零速度 + 取消任务
+2. **撤销接管**：CH5 切回 Loiter，上位机激活门禁 + 停止输出 + 飞手接管
+3. **断链策略**：心跳超时后激活门禁 + 按配置执行 LAND 或 LOITER + 取消任务
+4. **输出门禁（inhibit gate）**：安全事件触发后，control 层拒绝所有运动控制指令
+5. **并发安全**：control.py 全局 RLock，所有控制原语串行执行
+6. **任务可取消**：CancelToken 机制确保任何时刻可安全退出
+7. **底层稳定**：上位机只做高层任务，姿态稳定永远交给飞控
 
 ## 安装
 
@@ -81,23 +91,17 @@ chmod +x scripts/run.sh
 
 ## 日志位置
 
-运行时日志自动生成到 `logs/drone_mission.log`，支持按大小滚动（默认 10MB × 5 个备份）。
+运行时日志自动生成到 `logs/drone_mission.log`，支持按大小滚动（默认 10MB x 5 个备份）。
 
 ## 主状态机流程
 
 ```
-INIT → CONNECT → PRECHECK → WAIT_RC → RUN_MISSION → SAFE_EXIT
-  │        │          │          │           │
-  └──失败──┘──────────┘──────────┘───────────┘──→ SAFE_EXIT
+INIT -> CONNECT -> PRECHECK -> WAIT_RC -> RUN_MISSION -> SAFE_EXIT
+  |        |          |          |           |
+  +--失败--+----------+----------+-----------+--> SAFE_EXIT
 ```
 
-## 安全设计
-
-1. **KILL 最高优先级**：CH7/8 触发后，上位机立刻停止所有控制输出
-2. **撤销接管**：CH5 切回 Loiter，上位机停止发指令，飞手接管
-3. **断链策略**：心跳超时后按配置执行 LAND 或 LOITER
-4. **任务可取消**：CancelToken 机制确保任何时刻可安全退出
-5. **底层稳定**：上位机只做高层任务，姿态稳定永远交给飞控
+**WAIT_RC 安全保障**：等待期间始终检查 KILL 和 LINK_LOST，断链立即退出（不会无限卡住）。
 
 ## 目录结构
 
@@ -110,21 +114,22 @@ drone_mission/
 │   ├── logx.py               # 日志初始化
 │   ├── types.py              # 共享数据结构
 │   ├── fc_link.py            # 飞控连接管理
-│   ├── safety.py             # 安全监控（RC/KILL/断链）
-│   ├── control.py            # 控制原语
+│   ├── safety.py             # 安全监控（RC/KILL/断链 + failsafe 动作 + 输出门禁）
+│   ├── control.py            # 控制原语（全局锁 + 输出门禁）
 │   ├── mission_base.py       # 任务基类与 CancelToken
-│   ├── telemetry.py          # 遥测采样与发布
+│   ├── telemetry.py          # 遥测采样与发布（深拷贝）
+│   ├── fake_vehicle.py       # FakeVehicle 模拟器（dry-run 用）
 │   ├── vision/
 │   │   ├── camera.py         # 摄像头采集
 │   │   ├── tracker.py        # 目标检测/跟踪
-│   │   └── stream_flask.py   # Flask MJPEG 推流
+│   │   └── stream_flask.py   # Flask MJPEG 推流（FPS 可配）
 │   └── missions/
 │       ├── takeoff_and_hover.py
 │       ├── waypoint_square.py
 │       └── vision_track.py
 ├── scripts/run.sh            # 启动脚本
 ├── systemd/                  # systemd 服务文件
-├── tests/                    # FakeVehicle 单元测试
+├── tests/                    # 单元测试
 └── logs/                     # 运行时日志
 ```
 

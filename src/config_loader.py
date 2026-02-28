@@ -59,12 +59,12 @@ class FailsafeConfig:
     """断链 / 失联安全策略。"""
     link_lost_action: str = "LAND"
     heartbeat_timeout_s: float = 3.0
-    link_lost_timeout_s: float = 5.0
 
 
 @dataclass(frozen=True)
 class StreamConfig:
     """Flask MJPEG 推流参数。"""
+    enabled: bool = False
     host: str = "0.0.0.0"
     port: int = 5000
     fps: int = 15
@@ -119,9 +119,9 @@ class AppConfig:
 # ── 辅助函数 ──────────────────────────────────────────────
 
 
-def _deep_merge(base: dict, override: dict) -> dict:
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """递归合并两个字典，*override* 的值优先。"""
-    merged = dict(base)
+    merged: dict[str, Any] = dict(base)
     for key, value in override.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
             merged[key] = _deep_merge(merged[key], value)
@@ -141,7 +141,7 @@ def _env_overrides() -> dict[str, Any]:
     """
     overrides: dict[str, Any] = {}
 
-    def _set(d: dict, keys: list[str], value: Any) -> None:
+    def _set_nested(d: dict[str, Any], keys: list[str], value: Any) -> None:
         for k in keys[:-1]:
             d = d.setdefault(k, {})
         d[keys[-1]] = value
@@ -163,14 +163,14 @@ def _env_overrides() -> dict[str, Any]:
         val = os.environ.get(env_key)
         if val is not None:
             try:
-                _set(overrides, yaml_path, conv(val))
+                _set_nested(overrides, yaml_path, conv(val))
             except (ValueError, TypeError):
                 pass  # 跳过无法转换的值
 
     return overrides
 
 
-def _build_sub(cls: type, data: dict | None) -> Any:
+def _build_sub(cls: type, data: dict[str, Any] | None) -> Any:
     """通用子配置构建：如果 data 为 None 返回默认实例。"""
     if data is None:
         return cls()
@@ -212,7 +212,7 @@ def load_config(path: str = "config/vehicle.yaml") -> AppConfig:
         raise FileNotFoundError(f"配置文件不存在: {config_path.resolve()}")
 
     with open(config_path, "r", encoding="utf-8") as f:
-        raw: dict = yaml.safe_load(f) or {}
+        raw: dict[str, Any] = yaml.safe_load(f) or {}
 
     # 环境变量覆盖
     env = _env_overrides()

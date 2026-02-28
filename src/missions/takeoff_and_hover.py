@@ -2,9 +2,9 @@
 takeoff_and_hover — 起飞并悬停任务（占位）
 
 未来实现说明：
-    1. setup:  切换 GUIDED → arm → preflight_check
-    2. run:    调用 control.takeoff(alt_m) → 悬停指定时间 → 循环检查 token
-    3. teardown: control.stop_motion() → control.land()
+    1. setup:  切换 GUIDED -> arm -> preflight_check
+    2. run:    调用 control.takeoff(alt_m) -> 悬停指定时间 -> 循环检查 token
+    3. teardown: control.stop_motion() -> control.land()
 
 使用的控制原语：
     - control.set_mode("GUIDED")

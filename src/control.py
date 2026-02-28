@@ -1,25 +1,34 @@
 """
-control — 控制原语层
+control — 控制原语层（带全局锁与输出门禁）
 
 职责：
     封装所有对飞控的控制指令，供 mission 层调用。
     任务代码**不应直接操作 MAVLink / DroneKit**，统一通过本模块下发指令。
 
-设计原则：
-    - **限幅**：所有速度/角速度在发送前做 clamp，防止超限
-    - **频率**：速度指令应由调用方以 ≥1 Hz 持续发送（MAVLink 速度指令需持续刷新）
-    - **超时**：阻塞指令（takeoff/land/goto）均有 timeout 参数，超时则抛出异常
+安全设计（Fix 3 + Fix 4）：
+    - **全局 RLock**：所有控制原语必须持锁调用，防止任务线程与安全线程并发
+      send_mavlink 导致不可控行为。
+    - **输出门禁（inhibit gate）**：安全事件触发后，调用 ``inhibit_outputs()``
+      使后续所有运动控制指令被静默丢弃（set_mode/arm/disarm 仍允许，因安全层
+      需要切模式）。
+    - **限幅**：所有速度/角速度在发送前做 clamp，防止超限。
+    - **频率**：速度指令应由调用方以 ≥1 Hz 持续发送（MAVLink 速度指令需持续刷新）。
+    - **超时**：阻塞指令（takeoff/land/goto）均有 timeout 参数，超时则抛出异常。
     - **异常**：所有函数在操作失败时应抛出明确异常（RuntimeError / TimeoutError），
-      由上层状态机 / MissionTask 捕获并执行安全退出
+      由上层状态机 / MissionTask 捕获并执行安全退出。
 
-注意：
-    当前为占位实现（TODO），真机联调时逐步填充。
-    每个函数的 docstring 已写清未来实现要点。
+type_mask 参考（MAVLink SET_POSITION_TARGET_LOCAL_NED）：
+    bit 0 : pos_x      bit 3 : vel_x      bit 6 : accel_x    bit 9 : force
+    bit 1 : pos_y      bit 4 : vel_y      bit 7 : accel_y    bit 10: yaw
+    bit 2 : pos_z      bit 5 : vel_z      bit 8 : accel_z    bit 11: yaw_rate
+    置 1 = 忽略该字段
 """
 
 from __future__ import annotations
 
 import logging
+import math
+import threading
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +39,53 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# ── 全局并发控制 + 输出门禁（Fix 4）──────────────────────
+
+_control_lock = threading.RLock()
+_outputs_inhibited = False
+
+
+def inhibit_outputs() -> None:
+    """启用输出门禁——此后所有运动控制指令将被静默丢弃。
+
+    由 SafetyManager 在 KILL / LINK_LOST / 撤销接管 时调用。
+    """
+    global _outputs_inhibited
+    with _control_lock:
+        _outputs_inhibited = True
+        logger.warning("控制输出已被禁止（inhibit gate 激活）")
+
+
+def release_outputs() -> None:
+    """解除输出门禁——恢复正常控制指令发送。
+
+    仅应在确认安全后调用（如重新获得 RC 接管许可）。
+    """
+    global _outputs_inhibited
+    with _control_lock:
+        _outputs_inhibited = False
+        logger.info("控制输出已恢复（inhibit gate 解除）")
+
+
+def is_output_inhibited() -> bool:
+    """查询输出门禁状态。"""
+    with _control_lock:
+        return _outputs_inhibited
+
+
+def _check_inhibit(action: str) -> bool:
+    """检查门禁，若被抑制则记录日志并返回 True（调用方应跳过）。
+
+    注意：此函数在 _control_lock 已持有的环境下调用。
+    """
+    if _outputs_inhibited:
+        logger.debug("输出被禁止，丢弃指令: %s", action)
+        return True
+    return False
+
+
+# ── 模式 / 解锁（不受门禁限制——安全层需要切模式） ─────────
+
 
 def set_mode(vehicle: Any, mode: str) -> None:
     """切换飞行模式。
@@ -38,6 +94,7 @@ def set_mode(vehicle: Any, mode: str) -> None:
         - 使用 ``vehicle.mode = VehicleMode(mode)``
         - 等待模式切换确认（轮询 vehicle.mode.name），最多 5s
         - 切换失败应抛出 RuntimeError
+        - 此函数不受输出门禁限制（安全层需要切模式）
 
     Args:
         vehicle: DroneKit Vehicle 实例。
@@ -48,8 +105,9 @@ def set_mode(vehicle: Any, mode: str) -> None:
     """
     from dronekit import VehicleMode
 
-    logger.info("切换模式: %s -> %s", vehicle.mode.name, mode)
-    vehicle.mode = VehicleMode(mode)
+    with _control_lock:
+        logger.info("切换模式: %s -> %s", vehicle.mode.name, mode)
+        vehicle.mode = VehicleMode(mode)
 
     t0 = time.time()
     while vehicle.mode.name != mode:
@@ -58,6 +116,20 @@ def set_mode(vehicle: Any, mode: str) -> None:
         time.sleep(0.2)
 
     logger.info("模式切换完成: %s", mode)
+
+
+def set_mode_nowait(vehicle: Any, mode: str) -> None:
+    """非阻塞切换飞行模式——不等待确认，供安全层紧急调用。
+
+    Args:
+        vehicle: DroneKit Vehicle 实例。
+        mode:    目标模式名。
+    """
+    from dronekit import VehicleMode
+
+    with _control_lock:
+        logger.info("非阻塞切换模式: -> %s", mode)
+        vehicle.mode = VehicleMode(mode)
 
 
 def arm(vehicle: Any) -> None:
@@ -75,12 +147,13 @@ def arm(vehicle: Any) -> None:
     Raises:
         RuntimeError: 解锁失败或超时。
     """
-    logger.info("请求解锁电机…")
-
-    if vehicle.mode.name != "GUIDED":
-        raise RuntimeError(f"解锁前必须为 GUIDED 模式，当前: {vehicle.mode.name}")
-
-    vehicle.armed = True
+    with _control_lock:
+        if _check_inhibit("arm"):
+            return
+        logger.info("请求解锁电机...")
+        if vehicle.mode.name != "GUIDED":
+            raise RuntimeError(f"解锁前必须为 GUIDED 模式，当前: {vehicle.mode.name}")
+        vehicle.armed = True
 
     t0 = time.time()
     while not vehicle.armed:
@@ -94,18 +167,15 @@ def arm(vehicle: Any) -> None:
 def disarm(vehicle: Any) -> None:
     """上锁电机。
 
-    实现要点：
-        - 使用 ``vehicle.armed = False``
-        - 等待 disarm 确认，最多 5s
-
     Args:
         vehicle: DroneKit Vehicle 实例。
 
     Raises:
         RuntimeError: 上锁失败或超时。
     """
-    logger.info("请求上锁电机…")
-    vehicle.armed = False
+    with _control_lock:
+        logger.info("请求上锁电机...")
+        vehicle.armed = False
 
     t0 = time.time()
     while vehicle.armed:
@@ -114,6 +184,35 @@ def disarm(vehicle: Any) -> None:
         time.sleep(0.2)
 
     logger.info("电机已上锁")
+
+
+def force_disarm_nowait(vehicle: Any) -> None:
+    """Best-effort 强制上锁（不等待确认）。
+
+    发送 MAV_CMD_COMPONENT_ARM_DISARM（param5=21196 表示 force）。
+    用于 KILL 场景：上位机"尽力补一刀"，失败也不影响流程。
+    真正的停桨保障仍依赖飞控侧 RC kill。
+
+    Args:
+        vehicle: DroneKit Vehicle 实例。
+    """
+    try:
+        vehicle.message_factory  # 兼容性检查
+        msg = vehicle.message_factory.command_long_encode(
+            0, 0,                                        # target_system, target_component
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, # command
+            0,                                           # confirmation
+            0,                                           # param1: 0=disarm
+            21196,                                       # param2: force magic (21196)
+            0, 0, 0, 0, 0,                               # param3-7 unused
+        )
+        vehicle.send_mavlink(msg)
+        logger.warning("已发送 best-effort force disarm 指令")
+    except Exception as exc:
+        logger.warning("force disarm 发送失败（可忽略）: %s", exc)
+
+
+# ── 运动控制（受门禁限制） ────────────────────────────────
 
 
 def takeoff(vehicle: Any, alt_m: float, timeout_s: float = 30.0) -> None:
@@ -132,17 +231,21 @@ def takeoff(vehicle: Any, alt_m: float, timeout_s: float = 30.0) -> None:
         timeout_s: 超时（秒），默认 30s。
 
     Raises:
-        RuntimeError:  未解锁或模式错误。
+        RuntimeError:  未解锁或模式错误或门禁阻止。
         TimeoutError:  超时未到达目标高度。
     """
-    if not vehicle.armed:
-        raise RuntimeError("起飞前必须先解锁")
-
-    logger.info("起飞中  目标高度=%.1fm  超时=%ds", alt_m, timeout_s)
-    vehicle.simple_takeoff(alt_m)
+    with _control_lock:
+        if _check_inhibit("takeoff"):
+            raise RuntimeError("输出被禁止，无法起飞")
+        if not vehicle.armed:
+            raise RuntimeError("起飞前必须先解锁")
+        logger.info("起飞中  目标高度=%.1fm  超时=%ds", alt_m, timeout_s)
+        vehicle.simple_takeoff(alt_m)
 
     t0 = time.time()
     while True:
+        if is_output_inhibited():
+            raise RuntimeError("起飞过程中输出被禁止")
         current_alt = vehicle.location.global_relative_frame.alt
         logger.debug("当前高度: %.2fm / %.2fm", current_alt, alt_m)
         if current_alt >= alt_m * 0.95:
@@ -160,14 +263,15 @@ def land(vehicle: Any, timeout_s: float = 60.0) -> None:
 
     实现要点：
         - 使用 ``set_mode(vehicle, 'LAND')``
-        - 轮询高度直到 ≤ 0.3m 或 disarmed
+        - 轮询高度直到 <= 0.3m 或 disarmed
         - 超时不抛异常（降落是安全退出路径，不能再异常退出）
+        - 此函数不受门禁限制（降落本身就是安全动作）
 
     Args:
         vehicle:   DroneKit Vehicle 实例。
         timeout_s: 超时（秒），默认 60s。
     """
-    logger.info("开始降落…")
+    logger.info("开始降落...")
     try:
         set_mode(vehicle, "LAND")
     except RuntimeError as exc:
@@ -182,7 +286,7 @@ def land(vehicle: Any, timeout_s: float = 60.0) -> None:
             logger.info("已降落并触地上锁")
             return
         if alt <= 0.3:
-            logger.info("已接近地面 (%.2fm)，等待上锁…", alt)
+            logger.info("已接近地面 (%.2fm)，等待上锁...", alt)
         if time.time() - t0 > timeout_s:
             logger.warning("降落超时(%ds)，当前高度=%.2fm", timeout_s, alt)
             return
@@ -212,16 +316,22 @@ def goto_global(
         timeout_s: 超时（秒）。
 
     Raises:
+        RuntimeError: 输出被禁止。
         TimeoutError: 超时未到达目标点。
     """
     from dronekit import LocationGlobalRelative
 
-    target = LocationGlobalRelative(lat, lon, alt_m)
-    logger.info("飞向目标  lat=%.7f  lon=%.7f  alt=%.1fm", lat, lon, alt_m)
-    vehicle.simple_goto(target)
+    with _control_lock:
+        if _check_inhibit("goto_global"):
+            raise RuntimeError("输出被禁止，无法飞向目标")
+        target = LocationGlobalRelative(lat, lon, alt_m)
+        logger.info("飞向目标  lat=%.7f  lon=%.7f  alt=%.1fm", lat, lon, alt_m)
+        vehicle.simple_goto(target)
 
     t0 = time.time()
     while True:
+        if is_output_inhibited():
+            raise RuntimeError("飞行过程中输出被禁止")
         current = vehicle.location.global_relative_frame
         dist = _haversine_m(current.lat, current.lon, lat, lon)
         alt_err = abs(current.alt - alt_m)
@@ -241,8 +351,8 @@ def send_body_velocity(
     vx: float,
     vy: float,
     vz: float,
+    cfg: AppConfig,
     yaw_rate: float | None = None,
-    cfg: AppConfig | None = None,
 ) -> None:
     """发送机体坐标系速度指令。
 
@@ -250,24 +360,35 @@ def send_body_velocity(
         - vx: 前进（正）/ 后退（负），m/s
         - vy: 右移（正）/ 左移（负），m/s
         - vz: 下降（正）/ 上升（负），m/s
-        - yaw_rate: 偏航角速度（°/s），None 则保持当前航向
+        - yaw_rate: 偏航角速度（deg/s），None 则保持当前航向
 
-    实现要点：
-        - 在发送前按 limits 做 clamp
-        - 使用 MAVLink SET_POSITION_TARGET_LOCAL_NED (type_mask 仅保留速度)
-        - 此指令必须由调用方以 ≥1 Hz 持续发送，否则飞控 ~3s 后停止执行
-        - 发送频率建议：4-10 Hz
+    type_mask 设计（Fix 3）：
+        仅速度模式:        0x0FC7 = 0b0000_1111_1100_0111
+            忽略 pos(0-2) accel(6-8) force(9) yaw(10) yaw_rate(11)
+            使用 vel(3-5)
+
+        速度 + yaw_rate:   0x05C7 = 0b0000_0101_1100_0111
+            忽略 pos(0-2) accel(6-8) force(9) yaw(10)
+            使用 vel(3-5) + yaw_rate(11)
+
+    此指令必须由调用方以 >= 1 Hz 持续发送，否则飞控 ~3s 后停止执行。
+    建议发送频率 4-10 Hz。
+
+    **cfg 为必填参数**，确保限幅永远执行，防止裸速度输出。
 
     Args:
         vehicle:  DroneKit Vehicle 实例。
         vx:       前进速度（m/s）。
         vy:       右移速度（m/s）。
         vz:       下降速度（m/s，正值向下）。
-        yaw_rate: 偏航角速度（°/s），可选。
-        cfg:      配置实例（用于读取限幅值）。
+        cfg:      配置实例（用于读取限幅值，必填）。
+        yaw_rate: 偏航角速度（deg/s），可选。
     """
-    # 限幅
-    if cfg is not None:
+    with _control_lock:
+        if _check_inhibit("send_body_velocity"):
+            return  # 静默丢弃
+
+        # 限幅（始终执行——cfg 为必填）
         max_xy = cfg.limits.max_xy_vel_mps
         max_z = cfg.limits.max_z_vel_mps
         vx = _clamp(vx, -max_xy, max_xy)
@@ -277,32 +398,30 @@ def send_body_velocity(
             max_yaw = cfg.limits.max_yaw_rate_dps
             yaw_rate = _clamp(yaw_rate, -max_yaw, max_yaw)
 
-    # 构建 MAVLink 消息
-    # type_mask: 忽略位置与加速度，仅保留速度（+可选 yaw_rate）
-    #   bit 0-2: 位置 x/y/z  -> 忽略(1)
-    #   bit 3-5: 速度 x/y/z  -> 使用(0)
-    #   bit 6-8: 加速度       -> 忽略(1)
-    #   bit 9:   force        -> 忽略
-    #   bit 10:  yaw          -> 忽略(1)
-    #   bit 11:  yaw_rate     -> 使用(0) 或 忽略(1)
-    if yaw_rate is not None:
-        type_mask = 0b0000_01_111_000_111  # 使用速度 + yaw_rate
-    else:
-        type_mask = 0b0000_11_111_000_111  # 仅使用速度
-        yaw_rate = 0.0
+        # type_mask 构建（Fix 3 — 正确的位域）
+        if yaw_rate is not None:
+            # 使用 vel(3-5) + yaw_rate(11)
+            # 忽略 pos(0-2) + accel(6-8) + force(9) + yaw(10)
+            type_mask = 0x05C7
+            yaw_rate_rad = yaw_rate * math.pi / 180.0
+        else:
+            # 仅使用 vel(3-5)
+            # 忽略 pos(0-2) + accel(6-8) + force(9) + yaw(10) + yaw_rate(11)
+            type_mask = 0x0FC7
+            yaw_rate_rad = 0.0
 
-    msg = vehicle.message_factory.set_position_target_local_ned_encode(
-        0,       # time_boot_ms（不使用）
-        0, 0,    # target_system, target_component
-        mavutil.mavlink.MAV_FRAME_BODY_NED,
-        type_mask,
-        0, 0, 0,           # x, y, z（忽略）
-        vx, vy, vz,        # 速度
-        0, 0, 0,            # 加速度（忽略）
-        0,                  # yaw（忽略）
-        yaw_rate * 3.14159265 / 180.0,  # yaw_rate（rad/s）
-    )
-    vehicle.send_mavlink(msg)
+        msg = vehicle.message_factory.set_position_target_local_ned_encode(
+            0,       # time_boot_ms（不使用）
+            0, 0,    # target_system, target_component
+            mavutil.mavlink.MAV_FRAME_BODY_NED,
+            type_mask,
+            0, 0, 0,              # x, y, z（忽略）
+            vx, vy, vz,           # 速度
+            0, 0, 0,              # 加速度（忽略）
+            0,                    # yaw（忽略，bit10 已置 1）
+            yaw_rate_rad,         # yaw_rate（rad/s）
+        )
+        vehicle.send_mavlink(msg)
 
 
 def stop_motion(vehicle: Any) -> None:
@@ -311,21 +430,33 @@ def stop_motion(vehicle: Any) -> None:
     实现要点：
         - 发送零速度指令
         - 连续发送 3 次以确保飞控收到
+        - 此函数不受门禁限制（安全层调用它来停止输出）
 
     Args:
         vehicle: DroneKit Vehicle 实例。
     """
     logger.info("停止运动（速度归零）")
-    for _ in range(3):
-        send_body_velocity(vehicle, 0.0, 0.0, 0.0)
-        time.sleep(0.1)
+    with _control_lock:
+        # stop_motion 绕过门禁——它本身就是安全动作
+        for _ in range(3):
+            msg = vehicle.message_factory.set_position_target_local_ned_encode(
+                0, 0, 0,
+                mavutil.mavlink.MAV_FRAME_BODY_NED,
+                0x0FC7,           # 仅速度，全零
+                0, 0, 0,          # pos（忽略）
+                0, 0, 0,          # vel = 0
+                0, 0, 0,          # accel（忽略）
+                0, 0,             # yaw, yaw_rate（忽略）
+            )
+            vehicle.send_mavlink(msg)
+            time.sleep(0.1)
 
 
 def preflight_check(vehicle: Any) -> tuple[bool, str]:
     """起飞前检查。
 
     检查项目：
-        1. GPS Fix ≥ 3（3D Fix）
+        1. GPS Fix >= 3（3D Fix）
         2. EKF 状态正常
         3. 电池电压 > 阈值（若可用）
         4. 模式为 GUIDED
@@ -342,7 +473,7 @@ def preflight_check(vehicle: Any) -> tuple[bool, str]:
     # GPS
     gps = vehicle.gps_0
     if gps.fix_type < 3:
-        reasons.append(f"GPS Fix 不足: fix_type={gps.fix_type}  需要 ≥3")
+        reasons.append(f"GPS Fix 不足: fix_type={gps.fix_type}  需要 >=3")
 
     # EKF
     try:
@@ -380,8 +511,6 @@ def _clamp(value: float, min_val: float, max_val: float) -> float:
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Haversine 公式计算两点水平距离（米）。"""
-    import math
-
     R = 6_371_000  # 地球平均半径（米）
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)

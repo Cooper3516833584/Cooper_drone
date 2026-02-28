@@ -78,14 +78,15 @@ class Tracker:
     # ── 查询接口 ──────────────────────────────
 
     def latest_target(self) -> VisionTarget:
-        """获取最新目标检测结果（线程安全）。
+        """获取最新目标检测结果（线程安全，返回拷贝）。
 
         Returns:
-            VisionTarget 实例。调用方应检查
+            VisionTarget 的拷贝实例。调用方应检查
             ``detected`` 和 ``is_stale()``。
         """
+        from dataclasses import replace
         with self._lock:
-            return self._target
+            return replace(self._target)
 
     # ── 内部跟踪循环 ──────────────────────────
 
@@ -129,7 +130,6 @@ class Tracker:
         Returns:
             VisionTarget 实例。
         """
-        # ──── 占位：当前不执行任何检测 ────
         return VisionTarget(
             timestamp=time.time(),
             dx=0.0,

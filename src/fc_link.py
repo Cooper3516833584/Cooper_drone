@@ -6,12 +6,15 @@ fc_link — 飞控连接、重连与心跳监控
     提供连接/断开/重连/心跳监控能力。
 
 硬件前提：
-    树莓派 UART ↔ Matek H743 Slim V3 UART
+    树莓派 UART <-> Matek H743 Slim V3 UART
 
 设计原则：
     - 连接超时、重试间隔、最大重试次数均可配
     - 连接成功后执行 ``wait_ready`` 等待关键字段可用
     - 支持 dry-run 模式（使用 FakeVehicle 代替真实连接）
+
+Fix 6：FakeVehicle 已移至 src/fake_vehicle.py（而非 tests/），
+    确保打包后 dry-run 模式也能正常 import。
 """
 
 from __future__ import annotations
@@ -153,7 +156,7 @@ class FlightControllerLink:
             except Exception as exc:
                 logger.error("连接失败 (%d/%d): %s", attempt, retries, exc)
                 if attempt < retries:
-                    logger.info("等待 %ds 后重试…", interval)
+                    logger.info("等待 %ds 后重试...", interval)
                     time.sleep(interval)
 
         raise ConnectionError(
@@ -161,8 +164,11 @@ class FlightControllerLink:
         )
 
     def _connect_fake(self) -> None:
-        """创建 FakeVehicle 用于 dry-run 测试。"""
-        from tests.fake_vehicle import FakeVehicle
+        """创建 FakeVehicle 用于 dry-run 测试。
+
+        Fix 6：从 src.fake_vehicle 导入（而非 tests）。
+        """
+        from src.fake_vehicle import FakeVehicle
 
         logger.info("[DRY-RUN] 使用 FakeVehicle 模拟飞控连接")
         self._vehicle = FakeVehicle()

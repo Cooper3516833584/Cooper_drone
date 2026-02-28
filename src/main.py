@@ -12,7 +12,10 @@ main — 程序入口：主状态机
     3. PRECHECK:    读取遥测并执行 preflight_check
     4. WAIT_RC:     等待 RC 允许接管（CH5 >= guided_pwm_min）
     5. RUN_MISSION: 选择并执行任务
-    6. SAFE_EXIT:   任务结束/取消/异常 → stop_motion → land/loiter → 退出
+    6. SAFE_EXIT:   任务结束/取消/异常 -> stop_motion -> land/loiter -> 退出
+
+Fix 1：WAIT_RC 阶段增加 LINK_LOST 检查，
+      断链立即进入 SAFE_EXIT，不再无限等待。
 
 命令行参数：
     --config PATH     配置文件路径（默认 config/vehicle.yaml）
@@ -105,7 +108,7 @@ class DroneStateMachine:
 
         while not self._shutdown_requested:
             try:
-                logger.info("━━ 状态: %s ━━", self._state.value)
+                logger.info("== 状态: %s ==", self._state.value)
                 next_state = self._dispatch()
                 if next_state is None:
                     break
@@ -121,7 +124,7 @@ class DroneStateMachine:
 
     def _dispatch(self) -> State | None:
         """根据当前状态分发到对应处理函数。"""
-        handlers = {
+        handlers: dict[State, Any] = {
             State.INIT: self._state_init,
             State.CONNECT: self._state_connect,
             State.PRECHECK: self._state_precheck,
@@ -145,12 +148,12 @@ class DroneStateMachine:
         self._cfg = load_config(self._args.config)
         init_logging(self._cfg)
 
-        logger.info("════════════════════════════════════════════")
+        logger.info("============================================")
         logger.info("  Drone Mission Control Framework v0.1.0")
         logger.info("  dry-run=%s  stream=%s  mission=%s",
                      self._args.dry_run, self._args.enable_stream,
-                     self._args.mission or "(无)")
-        logger.info("════════════════════════════════════════════")
+                     self._args.mission or "(none)")
+        logger.info("============================================")
 
         return State.CONNECT
 
@@ -185,8 +188,8 @@ class DroneStateMachine:
         self._safety = SafetyManager(self._cfg, self._link)
         self._safety.start()
 
-        # 视频推流（可选）
-        if self._args.enable_stream:
+        # 视频推流（CLI --enable-stream 或配置 vision.stream.enabled）
+        if self._args.enable_stream or self._cfg.vision.stream.enabled:
             self._start_vision()
 
         # 等待遥测稳定
@@ -200,7 +203,6 @@ class DroneStateMachine:
         if not passed:
             logger.warning("起飞前检查未通过: %s", reason)
             # 不退出——仍然进入 WAIT_RC，让飞手决策
-            # 如果没有任务，也可以在此等待
 
         snap = self._telemetry.latest()
         logger.info(
@@ -215,22 +217,36 @@ class DroneStateMachine:
     # ── 4. WAIT_RC ───────────────────────────
 
     def _state_wait_rc(self) -> State:
-        """等待 RC 允许上位机接管（CH5 >= guided_pwm_min）。"""
+        """等待 RC 允许上位机接管（CH5 >= guided_pwm_min）。
+
+        Fix 1：增加 LINK_LOST 检查——断链立即进入 SAFE_EXIT，
+        不再无限卡住在此循环。
+        """
+        from src.safety import SafetyState
+
         if self._args.mission is None:
             logger.info("未指定任务，系统进入待机状态（Ctrl+C 退出）")
             self._standby_loop()
             return State.SAFE_EXIT
 
-        logger.info("等待 RC 允许接管…（CH%d >= %d）",
+        logger.info("等待 RC 允许接管...(CH%d >= %d)",
                      self._cfg.rc.mode_channel, self._cfg.rc.guided_pwm_min)
 
         while not self._shutdown_requested:
-            # 安全检查
-            if self._safety.is_kill_triggered():
+            safety_state = self._safety.get_safety_state()
+
+            # Fix 1: 检查紧急停桨
+            if safety_state == SafetyState.KILL:
                 logger.error("等待期间触发紧急停桨")
                 return State.SAFE_EXIT
 
-            if self._safety.is_guided_allowed():
+            # Fix 1: 检查断链——不再无限等待
+            if safety_state == SafetyState.LINK_LOST:
+                logger.error("等待期间检测到链路丢失，进入安全退出")
+                return State.SAFE_EXIT
+
+            # 允许接管
+            if safety_state == SafetyState.GUIDED_ALLOWED:
                 logger.info("RC 允许接管，进入任务执行")
                 return State.RUN_MISSION
 
@@ -289,10 +305,10 @@ class DroneStateMachine:
     # ── 6. SAFE_EXIT ─────────────────────────
 
     def _state_safe_exit(self) -> State | None:
-        """安全退出——停止控制输出、降落、关闭所有子系统。"""
-        logger.info("执行安全退出流程…")
+        """安全退出——停止控制输出、降落/悬停、关闭所有子系统。"""
+        logger.info("执行安全退出流程...")
 
-        # 停止运动
+        # 停止运动 + 按策略执行 LAND/LOITER
         if self._link and self._link.is_connected():
             try:
                 from src.control import stop_motion
@@ -300,6 +316,22 @@ class DroneStateMachine:
                 stop_motion(vehicle)
             except Exception as exc:
                 logger.warning("stop_motion 失败: %s", exc)
+
+            # Fix G: 如果飞机已 armed，按 failsafe 策略执行 LAND/LOITER
+            try:
+                vehicle = self._link.get_vehicle()
+                if vehicle.armed:
+                    action = self._cfg.failsafe.link_lost_action.upper()
+                    if action == "LOITER":
+                        from src.control import set_mode_nowait
+                        logger.info("SAFE_EXIT: 切换到 LOITER")
+                        set_mode_nowait(vehicle, "LOITER")
+                    else:
+                        from src.control import land
+                        logger.info("SAFE_EXIT: 执行 LAND")
+                        land(vehicle, timeout_s=30.0)
+            except Exception as exc:
+                logger.warning("SAFE_EXIT land/loiter 失败: %s", exc)
 
         # 停止子系统
         if self._tracker:
@@ -353,15 +385,26 @@ class DroneStateMachine:
             self._tracker = None
 
     def _standby_loop(self) -> None:
-        """待机循环——定期输出遥测信息。"""
+        """待机循环——定期输出遥测信息。
+
+        Fix 1 同样适用：待机循环也检查 LINK_LOST。
+        """
+        from src.safety import SafetyState
+
         logger.info("进入待机模式  按 Ctrl+C 退出")
         while not self._shutdown_requested:
             try:
+                safety_state = self._safety.get_safety_state()
+                if safety_state in (SafetyState.KILL, SafetyState.LINK_LOST):
+                    logger.warning("待机期间检测到安全事件 (%s)，退出待机",
+                                    safety_state.value)
+                    return
+
                 snap = self._telemetry.latest()
                 logger.info(
                     "待机  mode=%s  armed=%s  alt=%.1fm  safety=%s",
                     snap.mode, snap.armed, snap.alt_rel_m,
-                    self._safety.get_safety_state().value,
+                    safety_state.value,
                 )
                 time.sleep(2.0)
             except Exception:
@@ -369,7 +412,7 @@ class DroneStateMachine:
 
     def _signal_handler(self, signum: int, frame: Any) -> None:
         """信号处理——优雅退出。"""
-        logger.info("收到信号 %d，准备退出…", signum)
+        logger.info("收到信号 %d，准备退出...", signum)
         self._shutdown_requested = True
 
 

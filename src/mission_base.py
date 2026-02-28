@@ -2,7 +2,7 @@
 mission_base — 任务基类、取消令牌与任务上下文
 
 职责：
-    定义所有飞行任务的统一生命周期：setup → run → teardown。
+    定义所有飞行任务的统一生命周期：setup -> run -> teardown。
     提供 CancelToken 机制，让 SafetyManager、超时或外部信号可随时取消任务。
     提供 MissionContext，聚合所有子系统引用，供任务使用。
 
@@ -197,7 +197,7 @@ class MissionTask(ABC):
         ...
 
     def execute(self, ctx: MissionContext, token: CancelToken) -> None:
-        """完整执行任务（setup → run → teardown）。
+        """完整执行任务（setup -> run -> teardown）。
 
         自动处理超时、取消、异常，并确保 teardown 始终执行。
 
@@ -206,7 +206,7 @@ class MissionTask(ABC):
             token: 取消令牌。
         """
         task_logger = ctx.logger
-        task_logger.info("══ 任务开始: %s  (超时=%.0fs) ══", self.name, self.timeout_s)
+        task_logger.info("== 任务开始: %s  (超时=%.0fs) ==", self.name, self.timeout_s)
 
         # 超时守护线程
         timeout_timer: threading.Timer | None = None
@@ -219,7 +219,7 @@ class MissionTask(ABC):
 
         try:
             # ── Setup ──
-            task_logger.info("▸ setup()")
+            task_logger.info("> setup()")
             self.setup(ctx)
 
             # 检查 setup 后是否被取消
@@ -228,7 +228,7 @@ class MissionTask(ABC):
                 return
 
             # ── Run ──
-            task_logger.info("▸ run()")
+            task_logger.info("> run()")
             self.run(ctx, token)
 
             if token.is_cancelled():
@@ -237,7 +237,7 @@ class MissionTask(ABC):
                 task_logger.info("任务正常完成: %s", self.name)
 
         except Exception as exc:
-            task_logger.error("任务异常: %s — %s", self.name, exc, exc_info=True)
+            task_logger.error("任务异常: %s -- %s", self.name, exc, exc_info=True)
             if not token.is_cancelled():
                 token.cancel(f"任务异常: {exc}")
 
@@ -246,9 +246,9 @@ class MissionTask(ABC):
             if timeout_timer is not None:
                 timeout_timer.cancel()
             try:
-                task_logger.info("▸ teardown()")
+                task_logger.info("> teardown()")
                 self.teardown(ctx)
             except Exception as exc:
                 task_logger.error("teardown 异常: %s", exc, exc_info=True)
 
-            task_logger.info("══ 任务结束: %s ══", self.name)
+            task_logger.info("== 任务结束: %s ==", self.name)

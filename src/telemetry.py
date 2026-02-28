@@ -9,6 +9,7 @@ telemetry — 遥测采样与发布
 设计原则：
     - 后台线程按可配频率采样（如 5 Hz）
     - 线程安全：latest() 可被任何线程调用
+    - Fix 8：latest() 返回深拷贝，防止外部修改内部状态
     - 支持可选的回调订阅机制
 """
 
@@ -35,7 +36,7 @@ class TelemetryHub:
 
         hub = TelemetryHub(cfg, link)
         hub.start()
-        snap = hub.latest()
+        snap = hub.latest()   # 返回深拷贝
         print(snap.mode, snap.alt_rel_m)
         hub.stop()
 
@@ -81,13 +82,15 @@ class TelemetryHub:
     # ── 查询接口 ──────────────────────────────
 
     def latest(self) -> VehicleSnapshot:
-        """获取最新遥测快照（线程安全）。
+        """获取最新遥测快照（线程安全，返回深拷贝）。
+
+        Fix 8：返回深拷贝，防止外部修改内部状态。
 
         Returns:
             最近一次采样的 VehicleSnapshot 副本。
         """
         with self._lock:
-            return self._snapshot
+            return self._snapshot.copy()
 
     def subscribe(self, callback: Callable[[VehicleSnapshot], None]) -> None:
         """注册遥测回调。
@@ -120,10 +123,10 @@ class TelemetryHub:
         with self._lock:
             self._snapshot = snap
 
-        # 通知订阅者
+        # 通知订阅者（传递拷贝）
         for cb in self._subscribers:
             try:
-                cb(snap)
+                cb(snap.copy())
             except Exception as exc:
                 logger.debug("遥测回调异常: %s", exc)
 
