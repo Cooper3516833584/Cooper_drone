@@ -1,0 +1,59 @@
+mavlink:
+  port: /dev/serial0
+  baud: 921600
+  connect_timeout_s: 10
+  retry_interval_s: 3
+  max_retries: 0
+  heartbeat_timeout_s: 3
+  wait_heartbeat_timeout_s: 10
+  source_system: 245
+  source_component: 191
+  command_ack_timeout_s: 2.0
+  command_retries: 3
+  request_rates:
+    heartbeat_hz: 1
+    global_position_int_hz: 10
+    sys_status_hz: 2
+    gps_raw_int_hz: 5
+    rc_channels_hz: 10
+    home_position_hz: 1
+
+rc:
+  mode_channel: 5
+  kill_channel: 8
+  kill_channel_aux: 7
+  guided_pwm_threshold: 1500
+  kill_pwm_threshold: 1800
+  stale_timeout_s: 1.5
+
+limits:
+  takeoff_alt_m: 2.0
+  hover_seconds: 5.0
+  max_xy_vel_mps: 1.0
+  max_z_vel_mps: 0.5
+  max_yaw_rate_dps: 30
+  goto_accept_radius_m: 1.0
+  altitude_accept_error_m: 0.5
+  min_gps_fix_type: 3
+  min_battery_percent: 20
+  min_battery_voltage_v: 14.0
+
+failsafe:
+  link_lost_action: LAND
+  revoke_action: LOITER
+
+telemetry:
+  sample_hz: 5
+
+safety:
+  poll_hz: 10
+  check_home_position: false
+
+vision:
+  enabled: false
+  stream_enabled: false
+  stream_host: 0.0.0.0
+  stream_port: 5000
+
+app:
+  log_level: INFO

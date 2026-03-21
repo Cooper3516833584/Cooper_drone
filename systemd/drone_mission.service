@@ -1,0 +1,18 @@
+[Unit]
+Description=Cooper Drone Mission Service (pymavlink-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/cooper_drone
+EnvironmentFile=-/home/pi/cooper_drone/.env
+ExecStart=/usr/bin/python3 -m src.main --config config/vehicle.yaml --mission none
+Restart=on-failure
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

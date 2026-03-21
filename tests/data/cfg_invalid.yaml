@@ -1,0 +1,3 @@
+failsafe:
+  link_lost_action: INVALID_ACTION
+

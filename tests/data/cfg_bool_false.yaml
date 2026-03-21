@@ -1,0 +1,5 @@
+vision:
+  enabled: "false"
+safety:
+  check_home_position: "false"
+
