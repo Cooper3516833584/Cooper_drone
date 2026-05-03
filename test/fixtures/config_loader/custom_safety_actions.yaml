@@ -1,0 +1,6 @@
+safety:
+  kill_action: "LAND"
+  link_lost_action: "RTL"
+  revoke_action: "LOITER"
+  rc_stale_action: "BRAKE"
+  allow_force_disarm_on_kill: false

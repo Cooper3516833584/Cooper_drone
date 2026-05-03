@@ -116,7 +116,7 @@ class DroneMovement:
 
     def takeoff(self, altitude_m: float) -> None:
         """Command takeoff to a target relative altitude."""
-        self._motion_gate.assert_allowed()
+        self._motion_gate.assert_motion_allowed()
         if altitude_m <= 0:
             raise MovementRejected("Takeoff altitude must be greater than 0")
         if altitude_m > self._cfg.limits.max_altitude_m:
@@ -196,7 +196,7 @@ class DroneMovement:
         yaw_rate_dps: float = 0.0,
     ) -> None:
         """Send one clamped body-frame velocity setpoint."""
-        self._motion_gate.assert_allowed()
+        self._motion_gate.assert_motion_allowed()
         vx = _clamp(vx_mps, -self._cfg.limits.max_vx_mps, self._cfg.limits.max_vx_mps)
         vy = _clamp(vy_mps, -self._cfg.limits.max_vy_mps, self._cfg.limits.max_vy_mps)
         vz = _clamp(vz_mps, -self._cfg.limits.max_vz_mps, self._cfg.limits.max_vz_mps)

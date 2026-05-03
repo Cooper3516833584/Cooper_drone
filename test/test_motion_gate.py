@@ -15,7 +15,42 @@ def test_motion_gate_blocks_when_inhibited() -> None:
     gate.inhibit("test inhibit")
 
     with pytest.raises(MotionInhibitedError, match="test inhibit"):
-        gate.assert_allowed()
+        gate.assert_motion_allowed()
+
+
+def test_motion_gate_defaults_to_allowed() -> None:
+    """A new gate allows normal motion output."""
+    gate = MotionGate()
+
+    assert gate.is_inhibited() is False
+    assert gate.reason() == ""
+    gate.assert_motion_allowed()
+
+
+def test_motion_gate_clear_restores_allowed_state() -> None:
+    """Clear removes inhibit state and reason."""
+    gate = MotionGate()
+    gate.inhibit("operator")
+
+    assert gate.reason() == "operator"
+    gate.clear()
+
+    assert gate.is_inhibited() is False
+    assert gate.reason() == ""
+    gate.assert_motion_allowed()
+
+
+def test_motion_gate_instances_do_not_share_state() -> None:
+    """Separate gates do not pollute each other."""
+    first = MotionGate()
+    second = MotionGate()
+
+    first.inhibit("first")
+
+    assert first.is_inhibited() is True
+    assert first.reason() == "first"
+    assert second.is_inhibited() is False
+    second.assert_motion_allowed()
 
 
 def test_motion_gate_thread_safe_basic() -> None:

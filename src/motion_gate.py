@@ -14,7 +14,7 @@ class MotionGate:
 
     def __init__(self) -> None:
         """Create an open motion gate."""
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._reason: str | None = None
 
     def inhibit(self, reason: str) -> None:
@@ -32,14 +32,18 @@ class MotionGate:
         with self._lock:
             return self._reason is not None
 
-    def reason(self) -> str | None:
+    def reason(self) -> str:
         """Return the current inhibit reason."""
         with self._lock:
-            return self._reason
+            return self._reason or ""
 
-    def assert_allowed(self) -> None:
-        """Raise if movement commands are currently blocked."""
+    def assert_motion_allowed(self) -> None:
+        """Raise if normal motion output is currently blocked."""
         with self._lock:
             reason = self._reason
         if reason is not None:
             raise MotionInhibitedError(reason)
+
+    def assert_allowed(self) -> None:
+        """Raise if movement commands are currently blocked."""
+        self.assert_motion_allowed()

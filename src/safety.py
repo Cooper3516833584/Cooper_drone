@@ -4,36 +4,15 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
-from enum import Enum
 from typing import Callable
 
 from src.config_loader import SafetyConfig
 from src.logging_runtime import RuntimeLogger
 from src.motion_gate import MotionGate
+from src.safety_actions import SafetyActionExecutor
+from src.safety_policy import SafetyDecision, SafetyState
+from src.safety_policy import evaluate_safety as evaluate_safety_policy
 from src.state import VehicleState
-
-
-class SafetyState(Enum):
-    """Safety state ordered by project priority."""
-
-    NORMAL = "normal"
-    GUIDED_ALLOWED = "guided_allowed"
-    RC_STALE = "rc_stale"
-    LINK_LOST = "link_lost"
-    MANUAL_TAKEOVER = "manual_takeover"
-    KILL = "kill"
-
-
-@dataclass
-class SafetyDecision:
-    """Safety decision produced from vehicle state and safety config."""
-
-    state: SafetyState
-    reason: str
-    cancel_mission: bool
-    inhibit_motion: bool
-    failsafe_action: str | None
 
 
 def evaluate_safety(
@@ -44,25 +23,12 @@ def evaluate_safety(
     previous_state: SafetyState | None = None,
 ) -> SafetyDecision:
     """Evaluate vehicle safety using strict project priority order."""
-    if not cfg.enabled:
-        return SafetyDecision(SafetyState.NORMAL, "safety disabled", False, False, None)
-
-    if cfg.kill_switch_enabled and _flag(state, "kill_switch_active", "kill"):
-        return _unsafe_decision(SafetyState.KILL, "kill switch active", cfg, cancel=True)
-
-    if cfg.manual_takeover_enabled and _manual_takeover_detected(state, cfg):
-        return _unsafe_decision(SafetyState.MANUAL_TAKEOVER, "manual takeover detected", cfg, cancel=True)
-
-    if cfg.require_heartbeat and _heartbeat_lost(state, cfg, now):
-        return _unsafe_decision(SafetyState.LINK_LOST, "heartbeat link lost", cfg, cancel=True)
-
-    if cfg.manual_takeover_enabled and _rc_stale(state, cfg, now):
-        return _unsafe_decision(SafetyState.RC_STALE, "RC input is stale", cfg, cancel=True)
-
-    if cfg.require_guided and _mode_is_guided(state.mode):
-        return SafetyDecision(SafetyState.GUIDED_ALLOWED, "guided mode is active", False, False, None)
-
-    return SafetyDecision(SafetyState.NORMAL, "safety checks passed", False, False, None)
+    return evaluate_safety_policy(
+        snapshot=state,
+        now_monotonic=now,
+        cfg=cfg,
+        previous_state=previous_state,
+    )
 
 
 class SafetySupervisor:
@@ -76,6 +42,7 @@ class SafetySupervisor:
         logger: RuntimeLogger,
         cancel_mission: Callable[[str], None],
         *,
+        action_executor: SafetyActionExecutor | None = None,
         check_interval_s: float = 0.05,
     ) -> None:
         """Create a safety supervisor."""
@@ -84,12 +51,14 @@ class SafetySupervisor:
         self._motion_gate = motion_gate
         self._logger = logger
         self._cancel_mission = cancel_mission
+        self._action_executor = action_executor
         self._check_interval_s = check_interval_s
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._current_state = SafetyState.NORMAL
         self._inhibit_source_state: SafetyState | None = None
+        self._executed_once_keys: set[str] = set()
 
     def start(self) -> None:
         """Start the background safety supervisor."""
@@ -151,9 +120,9 @@ class SafetySupervisor:
         if decision.inhibit_motion:
             self._motion_gate.inhibit(decision.reason)
             self._inhibit_source_state = decision.state
-        elif self._can_auto_clear_gate():
-            self._motion_gate.clear()
+        elif decision.state in {SafetyState.NORMAL, SafetyState.GUIDED_ALLOWED}:
             self._inhibit_source_state = None
+            self._executed_once_keys.clear()
 
         if decision.failsafe_action and state_changed:
             self._logger.safety(
@@ -162,59 +131,25 @@ class SafetySupervisor:
                 action=decision.failsafe_action,
             )
 
-    def _can_auto_clear_gate(self) -> bool:
-        if self._inhibit_source_state is None:
-            return False
-        return self._inhibit_source_state not in {SafetyState.KILL, SafetyState.MANUAL_TAKEOVER}
+        if self._action_executor is not None:
+            self._execute_actions(decision, state_changed=state_changed)
 
-
-def _unsafe_decision(
-    state: SafetyState,
-    reason: str,
-    cfg: SafetyConfig,
-    *,
-    cancel: bool,
-) -> SafetyDecision:
-    return SafetyDecision(
-        state=state,
-        reason=reason,
-        cancel_mission=cancel,
-        inhibit_motion=True,
-        failsafe_action=_failsafe_action(cfg),
-    )
-
-
-def _failsafe_action(cfg: SafetyConfig) -> str | None:
-    if cfg.failsafe_action == "none":
-        return None
-    return cfg.failsafe_action
-
-
-def _flag(state: VehicleState, *names: str) -> bool:
-    return any(bool(getattr(state, name, False)) for name in names)
-
-
-def _manual_takeover_detected(state: VehicleState, cfg: SafetyConfig) -> bool:
-    if _flag(state, "manual_takeover", "manual_takeover_active"):
-        return True
-    if not cfg.require_guided or state.mode is None:
-        return False
-    return not _mode_is_guided(state.mode)
-
-
-def _heartbeat_lost(state: VehicleState, cfg: SafetyConfig, now: float) -> bool:
-    if state.last_heartbeat_ts is None:
-        return True
-    return now - state.last_heartbeat_ts > cfg.heartbeat_loss_timeout_s
-
-
-def _rc_stale(state: VehicleState, cfg: SafetyConfig, now: float) -> bool:
-    if state.rc_last_update_ts is None:
-        return bool(state.rc_channels)
-    return now - state.rc_last_update_ts > cfg.rc_stale_timeout_s
-
-
-def _mode_is_guided(mode: str | None) -> bool:
-    if mode is None:
-        return False
-    return mode.upper() in {"GUIDED", "GUIDED_NOGPS"}
+    def _execute_actions(self, decision: SafetyDecision, *, state_changed: bool) -> None:
+        for action in decision.actions:
+            if action.once_key is not None and action.once_key in self._executed_once_keys and not action.allow_retry:
+                continue
+            if action.once_key is None and not state_changed and not action.allow_retry:
+                continue
+            try:
+                self._action_executor.execute(action.action, reason=action.reason)
+            except Exception as exc:
+                self._logger.safety(
+                    "safety_action_executor_failed",
+                    state=decision.state.value,
+                    action=action.action,
+                    reason=action.reason,
+                    error=repr(exc),
+                )
+            finally:
+                if action.once_key is not None:
+                    self._executed_once_keys.add(action.once_key)

@@ -1,0 +1,157 @@
+"""Tests for safety action execution."""
+
+from __future__ import annotations
+
+from src.config_loader import SafetyConfig
+from src.motion_gate import MotionGate
+from src.safety import SafetySupervisor, evaluate_safety
+from src.safety_actions import SafetyActionExecutor
+from src.state import VehicleState
+
+
+def test_stop_calls_stop_motion() -> None:
+    """STOP sends zero motion through the control layer."""
+    control = FakeControl()
+    result = SafetyActionExecutor(control, MemorySafetyLogger()).stop_motion(reason="link_lost")
+
+    assert result.ok is True
+    assert control.calls == [("stop_motion",)]
+
+
+def test_land_calls_land_nowait_when_available() -> None:
+    """LAND uses non-blocking land when the control layer provides it."""
+    control = FakeControl()
+    result = SafetyActionExecutor(control, MemorySafetyLogger()).land(reason="link_lost")
+
+    assert result.ok is True
+    assert control.calls == [("land_nowait",)]
+
+
+def test_loiter_calls_set_mode_nowait() -> None:
+    """LOITER maps to a mode change when no direct helper exists."""
+    control = FakeControl()
+    result = SafetyActionExecutor(control, MemorySafetyLogger()).loiter(reason="takeover")
+
+    assert result.ok is True
+    assert control.calls == [("set_mode_nowait", "LOITER")]
+
+
+def test_brake_calls_set_mode_nowait() -> None:
+    """BRAKE maps to a mode change when no direct helper exists."""
+    control = FakeControl()
+    result = SafetyActionExecutor(control, MemorySafetyLogger()).brake(reason="kill")
+
+    assert result.ok is True
+    assert control.calls == [("set_mode_nowait", "BRAKE")]
+
+
+def test_action_exception_returns_failed_result() -> None:
+    """Executor captures action exceptions instead of propagating them."""
+    control = FakeControl(fail_on="stop_motion")
+    result = SafetyActionExecutor(control, MemorySafetyLogger()).execute("stop", reason="link_lost")
+
+    assert result.ok is False
+    assert "RuntimeError" in (result.error or "")
+
+
+def test_disarm_and_force_disarm_are_not_default_failsafe_actions() -> None:
+    """Disarm actions require explicit executor opt-in."""
+    control = FakeControl()
+    logger = MemorySafetyLogger()
+    executor = SafetyActionExecutor(control, logger)
+
+    disarm = executor.execute("disarm", reason="kill")
+    force_disarm = executor.execute("force_disarm", reason="kill")
+
+    assert disarm.ok is False
+    assert force_disarm.ok is False
+    assert control.calls == []
+    assert logger.critical_messages == ["Force disarm safety action requested: kill"]
+
+
+def test_safety_supervisor_executes_policy_actions() -> None:
+    """SafetySupervisor delegates policy actions to SafetyActionExecutor."""
+    state = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=100.0)
+    cfg = _safety_config(link_lost_action="brake")
+    gate = MotionGate()
+    logger = MemorySafetyLogger()
+    control = FakeControl()
+    supervisor = SafetySupervisor(
+        lambda: state,
+        cfg,
+        gate,
+        logger,
+        lambda reason: None,
+        action_executor=SafetyActionExecutor(control, logger),
+    )
+    decision = evaluate_safety(state, cfg, now=100.0)
+
+    supervisor._apply_decision(decision, None)
+
+    assert control.calls == [("set_mode_nowait", "BRAKE")]
+    assert logger.safety_records[-1]["name"] == "safety_action_result"
+    assert logger.safety_records[-1]["ok"] is True
+
+
+class FakeControl:
+    """Fake low-level control surface used by safety action tests."""
+
+    def __init__(self, *, fail_on: str | None = None) -> None:
+        self.calls: list[tuple] = []
+        self.fail_on = fail_on
+
+    def stop_motion(self) -> None:
+        self._capture("stop_motion")
+
+    def land_nowait(self) -> None:
+        self._capture("land_nowait")
+
+    def set_mode_nowait(self, mode: str) -> None:
+        self._capture("set_mode_nowait", mode)
+
+    def disarm(self) -> None:
+        self._capture("disarm")
+
+    def _capture(self, *call: str) -> None:
+        if self.fail_on == call[0]:
+            raise RuntimeError(f"{call[0]} failed")
+        self.calls.append(tuple(call))
+
+
+class MemorySafetyLogger:
+    """Capture structured safety logs without touching files."""
+
+    def __init__(self) -> None:
+        self.safety_records: list[dict] = []
+        self.app_logger = self
+        self.critical_messages: list[str] = []
+
+    def safety(self, name: str, **fields) -> None:
+        self.safety_records.append({"name": name, **fields})
+
+    def critical(self, message: str, *args) -> None:
+        if args:
+            message = message % args
+        self.critical_messages.append(message)
+
+    def error(self, message: str, *args) -> None:
+        pass
+
+    def exception(self, message: str, *args) -> None:
+        pass
+
+
+def _safety_config(**overrides) -> SafetyConfig:
+    values = {
+        "enabled": True,
+        "allow_arm": False,
+        "require_guided": True,
+        "require_heartbeat": True,
+        "heartbeat_loss_timeout_s": 1.0,
+        "rc_stale_timeout_s": 1.0,
+        "manual_takeover_enabled": True,
+        "kill_switch_enabled": True,
+        "failsafe_action": "land",
+    }
+    values.update(overrides)
+    return SafetyConfig(**values)

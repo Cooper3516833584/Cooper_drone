@@ -1,74 +1,53 @@
-# Cooper_drone project rules
+# Cooper_drone safety rules
 
-## Mission
+## Project mission
 
-This repository is a pymavlink-based companion-computer control framework for an ArduPilot Copter vehicle.
+Cooper_drone is a pymavlink-only companion-computer framework for ArduPilot flight controllers.
 
-Target hardware:
-- Companion computer: STM32MP257 Linux board
-- Flight controller: Matek H743 V3 running ArduPilot
-- MAVLink transport: UART or UDP depending on config
+This safety-hardening phase must make the codebase safe as a foundation. Do not implement new vision algorithms or advanced movement solutions in this phase.
 
-## Required repository layout
+## Non-negotiable safety rules
 
-Root-level mission scripts must be runnable directly from VSCode.
-
-Expected layout:
-
-```text
-Cooper_drone/
-├── config/
-├── src/
-│   ├── Vision/
-│   └── solutions/
-├── test/
-├── task_takeoff_hover.py
-├── task_waypoint_square.py
-├── task_vision_follow.py
-└── task_healthcheck.py
-```
-
-## Hard rules
-
-- Use pymavlink only.
 - Do not use DroneKit.
-- Do not let root task scripts call raw MAVLink.
-- Do not let `src/solutions/` call raw MAVLink.
-- Only low-level MAVLink modules may touch `pymavlink.mavutil`.
-- Movement commands must pass through:
-  1. configuration limits
-  2. safety gate
-  3. logging
-  4. MAVLink command service or setpoint streamer
-- Mission code must be cancellable.
-- Safety logic must work even if a mission script is stuck or raises an exception.
-- Dry-run must never send real MAVLink movement commands.
-- All flight-state-changing commands must be logged.
+- Do not let mission, solutions, or Vision code call raw MAVLink APIs.
+- Flight-changing commands must go through the low-level control/movement layer.
+- Motion-producing commands must pass through MotionGate.
+- Safety actions such as stop, land, brake, loiter, RTL, and disarm must be callable even when normal motion output is inhibited.
+- Safety priority must be preserved:
+  KILL > MANUAL_TAKEOVER / TAKEOVER_REVOKED > LINK_LOST > RC_STALE > GUIDED_ALLOWED > NORMAL
+- KILL must not silently perform an in-air force-disarm unless explicitly configured.
+- The default KILL action should be conservative, e.g. stop + LAND or stop + BRAKE/LAND, not force-disarm.
+- RC_STALE must have its own configured action instead of implicitly reusing revoke_action.
+- Every safety state transition must be logged.
+- Every safety action attempt must be logged with result and error, if any.
+- Safety policy must be testable without threads or real MAVLink.
 
-## Safety priority
+## Architecture target
 
-Safety priority must be:
+Separate safety into these roles:
 
-```text
-KILL > MANUAL_TAKEOVER > LINK_LOST > RC_STALE > GUIDED_ALLOWED > NORMAL
-```
+- safety policy: pure decision logic, no threads and no MAVLink side effects
+- safety supervisor: polling loop and state machine
+- safety action executor: executes stop/land/brake/loiter/RTL/disarm actions through the control layer
+- motion gate: stores whether normal motion outputs are allowed
+- safety event log: structured audit trail for safety transitions and action attempts
 
-## Required validation commands
+## Validation commands
 
-After every stage, run:
+Run after every code change:
 
 ```bash
 pytest -q
-python task_healthcheck.py --config config/dry_run.yaml --dry-run
-python task_takeoff_hover.py --config config/dry_run.yaml --dry-run
+python -m src.main --config tests/data/cfg_dry_run.yaml --dry-run --mission none --standby-seconds 0.1
+python -m src.main --config tests/data/cfg_dry_run.yaml --dry-run --mission takeoff_and_hover
 ```
 
-## Style
+If the current repository uses root-level task programs instead of `python -m src.main`, run the equivalent dry-run task commands documented in README.
 
-- All code content, comments, and logs must be written in English to avoid encoding issues.
-- Prefer simple Python.
-- Prefer dataclasses for config and state.
-- Avoid hidden global mutable state.
-- Threaded loops must have clean stop methods.
-- Every background thread must be tested with short timeouts.
-- All public APIs must have docstrings.
+## Do not do in this phase
+
+- Do not implement new computer vision features.
+- Do not implement new advanced movement routes.
+- Do not add model files, YOLO, ONNX, OpenCV tracking, or camera pipelines.
+- Do not change flight behavior unless the task explicitly says it is a safety fix.
+- Do not delete existing tests without adding stronger safety tests.

@@ -14,6 +14,7 @@ from src.mission_runtime import CancellationToken
 from src.motion_gate import MotionGate
 from src.movement import DroneMovement
 from src.safety import SafetySupervisor
+from src.safety_actions import SafetyActionExecutor
 from src.state import VehicleState
 
 
@@ -67,12 +68,19 @@ def build_app_context(config_path: str, *, dry_run: bool | None = None) -> AppCo
     safety = None
 
     if cfg.safety.enabled:
+        safety_actions = SafetyActionExecutor(
+            movement,
+            logger,
+            allow_force_disarm=cfg.safety.allow_force_disarm_on_kill,
+        )
         safety = SafetySupervisor(
             state_provider,
             cfg.safety,
             motion_gate,
             logger,
             token.cancel,
+            action_executor=safety_actions,
+            check_interval_s=1.0 / cfg.safety.poll_hz,
         )
         safety.start()
 

@@ -21,6 +21,12 @@ def test_loads_dry_run_config() -> None:
     assert cfg.dry_run is True
     assert cfg.mavlink.connection_string == "dry-run"
     assert cfg.safety.allow_arm is False
+    assert cfg.safety.kill_action == "land"
+    assert cfg.safety.link_lost_action == "land"
+    assert cfg.safety.revoke_action == "loiter"
+    assert cfg.safety.rc_stale_action == "brake"
+    assert cfg.safety.allow_force_disarm_on_kill is False
+    assert cfg.safety.action_retry_interval_s == 1.0
 
 
 def test_dry_run_override_true_takes_effect() -> None:
@@ -34,6 +40,29 @@ def test_invalid_failsafe_action_raises() -> None:
     """Reject unsupported failsafe actions."""
     with pytest.raises(ConfigError, match="Invalid failsafe_action"):
         load_config(FIXTURE_DIR / "invalid_failsafe.yaml")
+
+
+def test_independent_safety_actions_parse_and_normalize() -> None:
+    """Parse independent safety actions without reusing a legacy action."""
+    cfg = load_config(FIXTURE_DIR / "custom_safety_actions.yaml")
+
+    assert cfg.safety.kill_action == "land"
+    assert cfg.safety.link_lost_action == "rtl"
+    assert cfg.safety.revoke_action == "loiter"
+    assert cfg.safety.rc_stale_action == "brake"
+    assert cfg.safety.allow_force_disarm_on_kill is False
+
+
+def test_invalid_independent_safety_action_raises() -> None:
+    """Reject unsupported independent safety actions."""
+    with pytest.raises(ConfigError, match="Invalid kill_action"):
+        load_config(FIXTURE_DIR / "invalid_kill_action.yaml")
+
+
+def test_invalid_force_disarm_bool_raises() -> None:
+    """Reject non-boolean force-disarm configuration."""
+    with pytest.raises(ConfigError, match="allow_force_disarm_on_kill"):
+        load_config(FIXTURE_DIR / "invalid_force_disarm_bool.yaml")
 
 
 def test_negative_timeout_raises() -> None:

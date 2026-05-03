@@ -10,6 +10,7 @@ from src.config_loader import SafetyConfig
 from src.logging_runtime import RuntimeLogger
 from src.motion_gate import MotionGate
 from src.safety import SafetyState, SafetySupervisor, evaluate_safety
+from src.safety_policy import MODE_CHANNEL, MODE_GUIDED_PWM_THRESHOLD
 from src.state import VehicleState
 
 
@@ -93,6 +94,146 @@ def test_safety_supervisor_start_stop_no_thread_leak() -> None:
     assert cancelled == []
 
 
+def test_kill_triggers_cancel_inhibit_and_executor_action() -> None:
+    """KILL state cancels the mission, inhibits motion, and executes its action."""
+    state = VehicleState(last_heartbeat_ts=99.5, rc_last_update_ts=99.5)
+    state.kill_switch_active = True
+    cfg = _safety_config(kill_action="land")
+    gate = MotionGate()
+    cancelled: list[str] = []
+    executor = RecordingActionExecutor()
+    supervisor = _supervisor(lambda: state, cfg, gate, cancelled.append, executor)
+
+    supervisor._apply_decision(evaluate_safety(state, cfg, now=100.0), None)
+
+    assert cancelled == ["kill channel active"]
+    assert gate.is_inhibited() is True
+    assert executor.calls == [("land", "kill channel active")]
+
+
+def test_takeover_revoked_triggers_revoke_action() -> None:
+    """TAKEOVER_REVOKED uses the configured revoke action."""
+    state = VehicleState(last_heartbeat_ts=99.5, mode="STABILIZE", rc_last_update_ts=99.5)
+    cfg = _safety_config(revoke_action="loiter")
+    executor = RecordingActionExecutor()
+    supervisor = _supervisor(lambda: state, cfg, MotionGate(), list().append, executor)
+
+    supervisor._apply_decision(evaluate_safety(state, cfg, now=100.0), None)
+
+    assert executor.calls == [("loiter", "guided control revoked")]
+
+
+def test_link_lost_triggers_link_lost_action() -> None:
+    """LINK_LOST uses the configured link-loss action."""
+    state = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    cfg = _safety_config(link_lost_action="land")
+    executor = RecordingActionExecutor()
+    supervisor = _supervisor(lambda: state, cfg, MotionGate(), list().append, executor)
+
+    supervisor._apply_decision(evaluate_safety(state, cfg, now=100.0), None)
+
+    assert executor.calls == [("land", "heartbeat link lost")]
+
+
+def test_link_lost_continuous_state_executes_once_action_once() -> None:
+    """LINK_LOST once action is not repeated while the state is continuous."""
+    state = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    cfg = _safety_config(link_lost_action="land")
+    executor = RecordingActionExecutor()
+    supervisor = _supervisor(lambda: state, cfg, MotionGate(), list().append, executor)
+    decision = evaluate_safety(state, cfg, now=100.0)
+
+    supervisor._apply_decision(decision, None)
+    supervisor._apply_decision(decision, SafetyState.LINK_LOST)
+
+    assert executor.calls == [("land", "heartbeat link lost")]
+
+
+def test_link_lost_action_retriggers_after_safe_recovery() -> None:
+    """A safe state clears once-action memory for later link loss."""
+    lost = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    recovered = VehicleState(last_heartbeat_ts=100.0, mode="GUIDED", rc_last_update_ts=100.0)
+    cfg = _safety_config(link_lost_action="land")
+    executor = RecordingActionExecutor()
+    supervisor = _supervisor(lambda: lost, cfg, MotionGate(), list().append, executor)
+
+    lost_decision = evaluate_safety(lost, cfg, now=100.0)
+    recovered_decision = evaluate_safety(recovered, cfg, now=100.0, previous_state=SafetyState.LINK_LOST)
+    lost_again_decision = evaluate_safety(lost, cfg, now=110.0, previous_state=recovered_decision.state)
+    supervisor._apply_decision(lost_decision, None)
+    supervisor._apply_decision(recovered_decision, SafetyState.LINK_LOST)
+    supervisor._apply_decision(lost_again_decision, recovered_decision.state)
+
+    assert executor.calls == [
+        ("land", "heartbeat link lost"),
+        ("land", "heartbeat link lost"),
+    ]
+
+
+def test_rc_stale_triggers_own_action() -> None:
+    """RC_STALE uses rc_stale_action rather than the revoke action."""
+    state = VehicleState(
+        last_heartbeat_ts=99.5,
+        rc_last_update_ts=0.0,
+        rc_channels={MODE_CHANNEL: MODE_GUIDED_PWM_THRESHOLD},
+    )
+    cfg = _safety_config(revoke_action="loiter", rc_stale_action="brake")
+    executor = RecordingActionExecutor()
+    supervisor = _supervisor(lambda: state, cfg, MotionGate(), list().append, executor)
+
+    supervisor._apply_decision(evaluate_safety(state, cfg, now=100.0), None)
+
+    assert executor.calls == [("brake", "RC input is stale")]
+
+
+def test_action_executor_exception_does_not_stop_supervisor_thread() -> None:
+    """Executor failures are logged and do not kill the safety loop."""
+    state = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    cfg = _safety_config(link_lost_action="land")
+    logger = MemorySafetyLogger()
+    supervisor = SafetySupervisor(
+        lambda: state,
+        cfg,
+        MotionGate(),
+        logger,
+        lambda reason: None,
+        action_executor=RecordingActionExecutor(raise_on_execute=True),
+        check_interval_s=0.01,
+    )
+
+    supervisor.start()
+    time.sleep(0.05)
+
+    assert supervisor._thread is not None
+    assert supervisor._thread.is_alive()
+    assert any(record["name"] == "safety_action_executor_failed" for record in logger.safety_records)
+    supervisor.stop()
+
+
+def test_stop_reliably_ends_thread() -> None:
+    """stop() joins the supervisor thread."""
+    state = VehicleState(last_heartbeat_ts=time.time(), mode="GUIDED", rc_last_update_ts=time.time())
+    supervisor = _supervisor(lambda: state, _safety_config(), MotionGate(), list().append, RecordingActionExecutor())
+
+    supervisor.start()
+    supervisor.stop()
+
+    assert supervisor._thread is None
+
+
+def test_repeated_start_does_not_create_multiple_threads() -> None:
+    """Calling start twice keeps one running safety thread."""
+    state = VehicleState(last_heartbeat_ts=time.time(), mode="GUIDED", rc_last_update_ts=time.time())
+    supervisor = _supervisor(lambda: state, _safety_config(), MotionGate(), list().append, RecordingActionExecutor())
+
+    supervisor.start()
+    first_thread = supervisor._thread
+    supervisor.start()
+
+    assert supervisor._thread is first_thread
+    supervisor.stop()
+
+
 def _safety_config(**overrides) -> SafetyConfig:
     values = {
         "enabled": True,
@@ -113,3 +254,53 @@ def _fake_runtime_logger() -> RuntimeLogger:
     logger = logging.getLogger("test.safety")
     logger.addHandler(logging.NullHandler())
     return RuntimeLogger(run_id="test-run", run_dir=Path("logs/test-safety"), app_logger=logger)
+
+
+def _supervisor(
+    state_provider,
+    cfg: SafetyConfig,
+    gate: MotionGate,
+    cancel_mission,
+    executor,
+) -> SafetySupervisor:
+    return SafetySupervisor(
+        state_provider,
+        cfg,
+        gate,
+        MemorySafetyLogger(),
+        cancel_mission,
+        action_executor=executor,
+        check_interval_s=0.01,
+    )
+
+
+class RecordingActionExecutor:
+    """Fake safety action executor for supervisor tests."""
+
+    def __init__(self, *, raise_on_execute: bool = False) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.raise_on_execute = raise_on_execute
+
+    def execute(self, action: str, *, reason: str) -> None:
+        self.calls.append((action, reason))
+        if self.raise_on_execute:
+            raise RuntimeError("executor failed")
+
+
+class MemorySafetyLogger:
+    """Small logger stub with structured safety capture."""
+
+    def __init__(self) -> None:
+        self.safety_records: list[dict] = []
+        self.app_logger = self
+        self.exceptions: list[str] = []
+        self.errors: list[str] = []
+
+    def safety(self, name: str, **fields) -> None:
+        self.safety_records.append({"name": name, **fields})
+
+    def exception(self, message: str, *args) -> None:
+        self.exceptions.append(message % args if args else message)
+
+    def error(self, message: str, *args) -> None:
+        self.errors.append(message % args if args else message)

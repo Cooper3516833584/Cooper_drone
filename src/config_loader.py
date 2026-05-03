@@ -9,7 +9,14 @@ from typing import Any
 import yaml
 
 
-VALID_FAILSAFE_ACTIONS = {"land", "brake", "loiter", "disarm", "none"}
+VALID_FAILSAFE_ACTIONS = {"land", "brake", "loiter", "rtl", "stop", "disarm", "force_disarm", "none"}
+SAFETY_ACTION_KEYS = (
+    "failsafe_action",
+    "kill_action",
+    "link_lost_action",
+    "revoke_action",
+    "rc_stale_action",
+)
 
 
 class ConfigError(ValueError):
@@ -56,6 +63,14 @@ class SafetyConfig:
     manual_takeover_enabled: bool
     kill_switch_enabled: bool
     failsafe_action: str
+    kill_action: str = "land"
+    link_lost_action: str = "land"
+    revoke_action: str = "loiter"
+    rc_stale_action: str = "brake"
+    allow_force_disarm_on_kill: bool = False
+    action_retry_interval_s: float = 1.0
+    action_log_throttle_s: float = 1.0
+    poll_hz: float = 10.0
 
 
 @dataclass
@@ -151,10 +166,21 @@ def _build_config(raw: dict[str, Any]) -> AppConfig:
         dry_run=_required(raw, "dry_run", bool),
         mavlink=MavlinkConfig(**_required_mapping(raw, "mavlink")),
         limits=LimitsConfig(**_required_mapping(raw, "limits")),
-        safety=SafetyConfig(**_required_mapping(raw, "safety")),
+        safety=_build_safety_config(_required_mapping(raw, "safety")),
         logging=LoggingConfig(**_required_mapping(raw, "logging")),
         vision=VisionConfig(**_required_mapping(raw, "vision")),
     )
+
+
+def _build_safety_config(raw: dict[str, Any]) -> SafetyConfig:
+    safety_raw = dict(raw)
+    for key in SAFETY_ACTION_KEYS:
+        if key in safety_raw:
+            value = safety_raw[key]
+            if not isinstance(value, str):
+                raise ConfigError(f"Configuration key safety.{key} must be str")
+            safety_raw[key] = value.lower()
+    return SafetyConfig(**safety_raw)
 
 
 def _required(raw: dict[str, Any], key: str, expected_type: type) -> Any:
@@ -174,6 +200,12 @@ def _required_mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _validate_config(cfg: AppConfig) -> None:
+    for action_key in SAFETY_ACTION_KEYS:
+        action = getattr(cfg.safety, action_key)
+        if action not in VALID_FAILSAFE_ACTIONS:
+            allowed = ", ".join(sorted(VALID_FAILSAFE_ACTIONS))
+            raise ConfigError(f"Invalid {action_key}: {action}. Allowed: {allowed}")
+
     if cfg.safety.failsafe_action not in VALID_FAILSAFE_ACTIONS:
         allowed = ", ".join(sorted(VALID_FAILSAFE_ACTIONS))
         raise ConfigError(f"Invalid failsafe_action: {cfg.safety.failsafe_action}. Allowed: {allowed}")
@@ -189,6 +221,10 @@ def _validate_config(cfg: AppConfig) -> None:
     _require_positive("limits.max_yaw_rate_dps", cfg.limits.max_yaw_rate_dps)
     _require_positive("limits.max_altitude_m", cfg.limits.max_altitude_m)
     _require_positive("limits.takeoff_altitude_tolerance_m", cfg.limits.takeoff_altitude_tolerance_m)
+    _require_positive("safety.poll_hz", cfg.safety.poll_hz)
+    _require_non_negative("safety.action_retry_interval_s", cfg.safety.action_retry_interval_s)
+    _require_non_negative("safety.action_log_throttle_s", cfg.safety.action_log_throttle_s)
+    _require_bool("safety.allow_force_disarm_on_kill", cfg.safety.allow_force_disarm_on_kill)
 
     if not cfg.dry_run and cfg.mavlink.connection_string == "dry-run":
         raise ConfigError("connection_string dry-run is only allowed when dry_run is true")
@@ -197,3 +233,13 @@ def _validate_config(cfg: AppConfig) -> None:
 def _require_positive(name: str, value: float) -> None:
     if value <= 0:
         raise ConfigError(f"Configuration value {name} must be greater than 0")
+
+
+def _require_non_negative(name: str, value: float) -> None:
+    if value < 0:
+        raise ConfigError(f"Configuration value {name} must be greater than or equal to 0")
+
+
+def _require_bool(name: str, value: bool) -> None:
+    if not isinstance(value, bool):
+        raise ConfigError(f"Configuration value {name} must be bool")
