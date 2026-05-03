@@ -1,0 +1,6 @@
+profile_name: dry_run
+dry_run: true
+mavlink:
+  connection_string: "dry-run"
+safety:
+  allow_arm: false

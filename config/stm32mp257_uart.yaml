@@ -1,0 +1,9 @@
+profile_name: stm32mp257_uart
+dry_run: false
+mavlink:
+  # Change this device path to match the actual STM32MP257 UART port.
+  connection_string: "/dev/ttySTM0"
+  baud: 921600
+safety:
+  allow_arm: false
+  failsafe_action: "land"

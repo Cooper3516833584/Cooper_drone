@@ -1,0 +1,41 @@
+profile_name: fixture_default
+dry_run: true
+mavlink:
+  connection_string: "dry-run"
+  baud: 115200
+  source_system: 255
+  source_component: 0
+  target_system: null
+  target_component: null
+  heartbeat_timeout_s: 5.0
+  command_timeout_s: 3.0
+  command_retries: 3
+limits:
+  max_vx_mps: 2.0
+  max_vy_mps: 2.0
+  max_vz_mps: 1.0
+  max_yaw_rate_dps: 45.0
+  max_altitude_m: 20.0
+  takeoff_altitude_tolerance_m: 0.3
+safety:
+  enabled: true
+  allow_arm: false
+  require_guided: true
+  require_heartbeat: true
+  heartbeat_loss_timeout_s: 2.0
+  rc_stale_timeout_s: 1.0
+  manual_takeover_enabled: true
+  kill_switch_enabled: true
+  failsafe_action: "land"
+logging:
+  log_dir: "logs"
+  telemetry_log_hz: 5.0
+  jsonl_enabled: true
+  console_level: "INFO"
+vision:
+  enabled: false
+  camera_index: 0
+  width: 640
+  height: 480
+  fps: 30
+  dry_run_source: null

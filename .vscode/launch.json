@@ -1,0 +1,103 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Cooper: healthcheck dry-run",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/task_healthcheck.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "config/dry_run.yaml",
+                "--dry-run"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Cooper: takeoff hover dry-run",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/task_takeoff_hover.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "config/dry_run.yaml",
+                "--dry-run",
+                "--altitude",
+                "1",
+                "--duration",
+                "0.1"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Cooper: waypoint square dry-run",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/task_waypoint_square.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "config/dry_run.yaml",
+                "--dry-run",
+                "--altitude",
+                "1",
+                "--side",
+                "1",
+                "--speed",
+                "0.5"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Cooper: vision follow dry-run",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/task_vision_follow.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "config/dry_run.yaml",
+                "--dry-run",
+                "--altitude",
+                "1",
+                "--duration",
+                "0.1"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Cooper: healthcheck SITL",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/task_healthcheck.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--config",
+                "config/sitl.yaml"
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },
+        {
+            "name": "Cooper: current Python file",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ]
+}

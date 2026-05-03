@@ -1,0 +1,8 @@
+profile_name: sitl
+dry_run: false
+mavlink:
+  connection_string: "udp:127.0.0.1:14550"
+  baud: 115200
+safety:
+  allow_arm: false
+  failsafe_action: "brake"

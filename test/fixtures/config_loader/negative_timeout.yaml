@@ -1,0 +1,2 @@
+mavlink:
+  heartbeat_timeout_s: -1.0

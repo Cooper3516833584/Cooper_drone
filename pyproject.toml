@@ -1,0 +1,23 @@
+[project]
+name = "cooper-drone"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "pymavlink>=2.4",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+pythonpath = ["."]
+markers = [
+    "dry_run: integration tests that run root task scripts in dry-run mode",
+    "sitl: tests that require ArduPilot SITL",
+]
+addopts = "-q -m 'not sitl'"
