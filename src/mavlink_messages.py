@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.ardupilot_modes import copter_mode_name
+
 
 MAV_MODE_FLAG_SAFETY_ARMED = 128
 
@@ -15,13 +17,18 @@ def heartbeat_to_mode_and_armed(msg: Any) -> tuple[str | None, bool | None]:
     if base_mode is not None:
         armed = bool(int(base_mode) & MAV_MODE_FLAG_SAFETY_ARMED)
 
-    mode = _field(msg, "flightmode")
+    mode = _mode_from_field(_field(msg, "flightmode"))
     if mode is None:
-        mode = _field(msg, "mode")
-    if mode is None:
-        custom_mode = _field(msg, "custom_mode")
-        if custom_mode is not None:
-            mode = f"custom_mode:{custom_mode}"
+        mode = _mode_from_field(_field(msg, "mode"))
+    if mode is not None:
+        return mode, armed
+
+    custom_mode = _field(msg, "custom_mode")
+    if custom_mode is not None:
+        mode = copter_mode_name(custom_mode)
+        if mode is not None:
+            return mode, armed
+        return f"custom_mode:{custom_mode}", armed
 
     return mode, armed
 
@@ -91,3 +98,12 @@ def message_type(msg: Any) -> str | None:
 
 def _field(msg: Any, name: str) -> Any:
     return getattr(msg, name, None)
+
+
+def _mode_from_field(value: Any) -> str | None:
+    if value is None:
+        return None
+    mode = str(value).strip()
+    if not mode:
+        return None
+    return mode.upper()

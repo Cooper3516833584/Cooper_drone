@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
-from src.app_context import build_app_context
+import pytest
+
+from src.app_context import AppContext, build_app_context
 from src.safety_events import EVENT_STATE_TRANSITION, SafetyEventRecorder
 from src.safety_policy import SafetyState
 
 
-def test_app_context_close_is_idempotent(dry_run_config_path: Path) -> None:
-    """Allow AppContext.close to be called more than once."""
+@pytest.fixture
+def app_ctx(dry_run_config_path: Path) -> AppContext:
     ctx = build_app_context(str(dry_run_config_path), dry_run=True)
+    try:
+        yield ctx
+    finally:
+        ctx.close()
+
+
+def test_app_context_close_is_idempotent(app_ctx: AppContext) -> None:
+    """Allow AppContext.close to be called more than once."""
+    ctx = app_ctx
 
     ctx.close()
     ctx.close()
@@ -20,9 +32,9 @@ def test_app_context_close_is_idempotent(dry_run_config_path: Path) -> None:
     assert ctx.connection is None
 
 
-def test_safety_supervisor_has_recorder_after_build(dry_run_config_path: Path) -> None:
+def test_safety_supervisor_has_recorder_after_build(app_ctx: AppContext) -> None:
     """build_app_context wires a SafetyEventRecorder into the supervisor."""
-    ctx = build_app_context(str(dry_run_config_path), dry_run=True)
+    ctx = app_ctx
 
     assert ctx.safety is not None
     supervisor = ctx.safety
@@ -30,12 +42,12 @@ def test_safety_supervisor_has_recorder_after_build(dry_run_config_path: Path) -
     assert isinstance(supervisor._recorder, SafetyEventRecorder)
 
 
-def test_safety_state_change_writes_to_recorder(dry_run_config_path: Path) -> None:
+def test_safety_state_change_writes_to_recorder(app_ctx: AppContext) -> None:
     """A safety state transition produces an event in the recorder."""
     from src.state import VehicleState
     from src.safety import evaluate_safety
 
-    ctx = build_app_context(str(dry_run_config_path), dry_run=True)
+    ctx = app_ctx
     supervisor = ctx.safety
     assert supervisor is not None
 
@@ -71,4 +83,29 @@ def test_safety_supervisor_none_when_safety_disabled(dry_run_config_path: Path) 
     disabled_path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
     ctx = build_app_context(str(disabled_path), dry_run=True)
-    assert ctx.safety is None
+    try:
+        assert ctx.safety is None
+    finally:
+        ctx.close()
+
+
+def test_app_context_close_stops_safety_supervisor_threads(dry_run_config_path: Path) -> None:
+    """Closing AppContext stops the safety supervisor thread it created."""
+    before = _safety_thread_names()
+
+    ctx = build_app_context(str(dry_run_config_path), dry_run=True)
+    try:
+        assert ctx.safety is not None
+    finally:
+        ctx.close()
+
+    after = _safety_thread_names()
+    assert after <= before
+
+
+def _safety_thread_names() -> set[str]:
+    return {
+        thread.name
+        for thread in threading.enumerate()
+        if "safety" in thread.name.lower()
+    }

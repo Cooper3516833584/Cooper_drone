@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Any, Callable
@@ -154,6 +155,7 @@ class MavlinkConnection:
         time_boot_ms = int(time.monotonic() * 1000) & 0xFFFFFFFF
         mav_frame_body_ned = 8
         type_mask_velocity_yaw_rate_only = 1479
+        yaw_rate_rad_s = math.radians(yaw_rate_dps)
         connection.mav.set_position_target_local_ned_send(
             time_boot_ms,
             target_system,
@@ -170,7 +172,7 @@ class MavlinkConnection:
             0.0,
             0.0,
             0.0,
-            yaw_rate_dps,
+            yaw_rate_rad_s,
         )
 
     @property

@@ -145,6 +145,6 @@ class FakeMavlinkSender:
                 "vx_mps": vx,
                 "vy_mps": vy,
                 "vz_mps": vz,
-                "yaw_rate_dps": yaw_rate,
+                "yaw_rate_rad_s": yaw_rate,
             }
         )

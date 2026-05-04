@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from uuid import uuid4
+
+import pytest
 
 from src.config_loader import MavlinkConfig
 from src.logging_runtime import RuntimeLogger
@@ -57,6 +60,34 @@ def test_receiver_thread_can_start_and_stop() -> None:
 
     assert state.relative_alt_m == 2.5
     assert fake_connection.closed is True
+
+
+@pytest.mark.parametrize(
+    ("yaw_rate_dps", "expected_rad_s"),
+    [
+        (90.0, math.pi / 2),
+        (-45.0, -math.pi / 4),
+    ],
+)
+def test_body_velocity_converts_yaw_rate_dps_to_rad_s(
+    yaw_rate_dps: float,
+    expected_rad_s: float,
+) -> None:
+    """Convert upper API yaw rate units before sending MAVLink setpoints."""
+    fake_connection = FakeMavlinkConnection()
+    connection = MavlinkConnection(
+        _mavlink_config("udp:127.0.0.1:14550"),
+        _fake_runtime_logger(),
+        lambda *args, **kwargs: fake_connection,
+    )
+    try:
+        connection.connect()
+        connection.send_body_velocity_setpoint(0.0, 0.0, 0.0, yaw_rate_dps)
+    finally:
+        connection.close()
+
+    sent_yaw_rate = fake_connection.mav.body_velocity_calls[-1]["yaw_rate_rad_s"]
+    assert sent_yaw_rate == pytest.approx(expected_rad_s, rel=1e-6)
 
 
 def _mavlink_config(connection_string: str) -> MavlinkConfig:

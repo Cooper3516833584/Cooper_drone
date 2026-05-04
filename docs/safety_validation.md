@@ -70,7 +70,7 @@ Expected: `ConfigError` with message mentioning the invalid action.
 ### 1.5 Verify safety event serialisation
 
 ```bash
-pytest -q tests/test_safety_events.py
+pytest -q test/test_safety_events.py
 ```
 
 Expected: all tests pass — confirms `SafetyEvent.to_dict()` / `.to_json()`
@@ -647,7 +647,7 @@ safety:
 pytest -q
 
 # Run only safety-related tests:
-pytest -q test/test_safety.py test/test_safety_actions.py test/test_safety_policy.py tests/test_safety_events.py tests/test_main_safety_exit.py
+pytest -q test/test_safety.py test/test_safety_actions.py test/test_safety_policy.py test/test_safety_events.py test/test_main_safety_exit.py
 
 # Run dry-run integration tests:
 pytest -q test/test_dry_run_integration.py
@@ -663,8 +663,8 @@ Key test files:
 | `test/test_safety_policy.py` | Pure policy decisions for all 6 states |
 | `test/test_safety_actions.py` | SafetyActionExecutor — all 8 action types |
 | `test/test_safety.py` | SafetySupervisor thread + action integration |
-| `tests/test_safety_events.py` | SafetyEvent serialisation + recorder |
-| `tests/test_main_safety_exit.py` | `safe_exit()` — all 6 failure + edge case scenarios |
+| `test/test_safety_events.py` | SafetyEvent serialisation + recorder |
+| `test/test_main_safety_exit.py` | `safe_exit()` — all 6 failure + edge case scenarios |
 | `test/test_dry_run_integration.py` | End-to-end dry-run task runs |
 
 ---
