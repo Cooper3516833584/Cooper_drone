@@ -9,7 +9,20 @@ from typing import Any
 import yaml
 
 
-VALID_FAILSAFE_ACTIONS = {"land", "brake", "loiter", "rtl", "stop", "disarm", "force_disarm", "none"}
+VALID_FAILSAFE_ACTIONS = {"land", "brake", "loiter", "rtl", "stop", "force_disarm", "none"}
+
+# force_disarm may only appear in kill_action.
+FORCE_DISARM_ALLOWED_KEYS = {"kill_action"}
+
+# Keys that must never be force_disarm or disarm.
+NON_KILL_ACTION_KEYS = {
+    "failsafe_action",
+    "link_lost_action",
+    "revoke_action",
+    "rc_stale_action",
+    "exit_action",
+    "standby_exit_action",
+}
 SAFETY_ACTION_KEYS = (
     "failsafe_action",
     "kill_action",
@@ -74,7 +87,7 @@ class SafetyConfig:
     action_log_throttle_s: float = 1.0
     poll_hz: float = 10.0
     exit_action: str = "land"
-    standby_exit_action: str = "loiter"
+    standby_exit_action: str = "none"
 
 
 @dataclass
@@ -210,6 +223,8 @@ def _validate_config(cfg: AppConfig) -> None:
             allowed = ", ".join(sorted(VALID_FAILSAFE_ACTIONS))
             raise ConfigError(f"Invalid {action_key}: {action}. Allowed: {allowed}")
 
+    _validate_force_disarm_constraints(cfg)
+
     if cfg.safety.failsafe_action not in VALID_FAILSAFE_ACTIONS:
         allowed = ", ".join(sorted(VALID_FAILSAFE_ACTIONS))
         raise ConfigError(f"Invalid failsafe_action: {cfg.safety.failsafe_action}. Allowed: {allowed}")
@@ -237,6 +252,24 @@ def _validate_config(cfg: AppConfig) -> None:
 def _require_positive(name: str, value: float) -> None:
     if value <= 0:
         raise ConfigError(f"Configuration value {name} must be greater than 0")
+
+
+def _validate_force_disarm_constraints(cfg: AppConfig) -> None:
+    safety = cfg.safety
+
+    for key in NON_KILL_ACTION_KEYS:
+        action = getattr(safety, key, "land")
+        if action in {"force_disarm", "disarm"}:
+            raise ConfigError(
+                f"safety.{key} cannot be '{action}'. "
+                "force_disarm is only allowed for kill_action."
+            )
+
+    if safety.kill_action == "force_disarm" and not safety.allow_force_disarm_on_kill:
+        raise ConfigError(
+            "safety.kill_action=force_disarm requires "
+            "safety.allow_force_disarm_on_kill=true"
+        )
 
 
 def _require_non_negative(name: str, value: float) -> None:

@@ -428,6 +428,97 @@ def test_supervisor_error_event_emitted_on_loop_exception() -> None:
     assert errors[0].error is not None
 
 
+def test_link_lost_inhibits_motion_gate() -> None:
+    """LINK_LOST decision inhibits the MotionGate."""
+    gate = MotionGate()
+    state = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    cfg = _safety_config(link_lost_action="land")
+    supervisor = _supervisor(lambda: state, cfg, gate, list().append, RecordingActionExecutor())
+
+    supervisor._apply_decision(evaluate_safety(state, cfg, now=100.0), None)
+
+    assert gate.is_inhibited() is True
+
+
+def test_recovery_to_guided_allowed_clears_motion_gate() -> None:
+    """Recovering to GUIDED_ALLOWED clears the MotionGate when supervisor inhibited it."""
+    gate = MotionGate()
+    lost = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    recovered = VehicleState(last_heartbeat_ts=100.0, mode="GUIDED", rc_last_update_ts=100.0)
+    cfg = _safety_config(link_lost_action="land")
+    supervisor = _supervisor(lambda: lost, cfg, gate, list().append, RecordingActionExecutor())
+
+    lost_decision = evaluate_safety(lost, cfg, now=100.0)
+    recovered_decision = evaluate_safety(
+        recovered, cfg, now=100.0, previous_state=SafetyState.LINK_LOST,
+    )
+
+    supervisor._apply_decision(lost_decision, None)
+    assert gate.is_inhibited() is True
+
+    supervisor._apply_decision(recovered_decision, SafetyState.LINK_LOST)
+    assert gate.is_inhibited() is False
+
+
+def test_recovery_only_clears_own_inhibit() -> None:
+    """MotionGate is not cleared if the supervisor did not set the inhibit."""
+    gate = MotionGate()
+    gate.inhibit("external module")
+    state = VehicleState(last_heartbeat_ts=99.5, mode="GUIDED", rc_last_update_ts=99.5)
+    cfg = _safety_config()
+    supervisor = _supervisor(lambda: state, cfg, gate, list().append, RecordingActionExecutor())
+
+    supervisor._apply_decision(evaluate_safety(state, cfg, now=100.0), None)
+
+    # Gate is still inhibited because the supervisor didn't own the inhibit.
+    assert gate.is_inhibited() is True
+    assert gate.reason() == "external module"
+
+
+def test_recovery_does_not_clear_external_inhibit_after_safety_inhibit() -> None:
+    """MotionGate is not cleared if another owner overwrote the safety reason."""
+    gate = MotionGate()
+    lost = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    recovered = VehicleState(last_heartbeat_ts=100.0, mode="GUIDED", rc_last_update_ts=100.0)
+    cfg = _safety_config(link_lost_action="land")
+    supervisor = _supervisor(lambda: lost, cfg, gate, list().append, RecordingActionExecutor())
+
+    lost_decision = evaluate_safety(lost, cfg, now=100.0)
+    recovered_decision = evaluate_safety(
+        recovered, cfg, now=100.0, previous_state=SafetyState.LINK_LOST,
+    )
+    supervisor._apply_decision(lost_decision, None)
+    gate.inhibit("external module")
+    supervisor._apply_decision(recovered_decision, SafetyState.LINK_LOST)
+
+    assert gate.is_inhibited() is True
+    assert gate.reason() == "external module"
+
+
+def test_motion_gate_cleared_logs_event() -> None:
+    """Clearing the MotionGate on recovery writes a safety log record."""
+    logger = MemorySafetyLogger()
+    gate = MotionGate()
+    lost = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    recovered = VehicleState(last_heartbeat_ts=100.0, mode="GUIDED", rc_last_update_ts=100.0)
+    cfg = _safety_config(link_lost_action="land")
+    supervisor = SafetySupervisor(
+        lambda: lost, cfg, gate, logger, lambda reason: None,
+        action_executor=RecordingActionExecutor(), check_interval_s=0.01,
+    )
+
+    lost_decision = evaluate_safety(lost, cfg, now=100.0)
+    recovered_decision = evaluate_safety(
+        recovered, cfg, now=100.0, previous_state=SafetyState.LINK_LOST,
+    )
+    supervisor._apply_decision(lost_decision, None)
+    supervisor._apply_decision(recovered_decision, SafetyState.LINK_LOST)
+
+    cleared = [r for r in logger.safety_records if r["name"] == "motion_gate_cleared"]
+    assert len(cleared) == 1
+    assert cleared[0]["previous_state"] == SafetyState.LINK_LOST.value
+
+
 def test_recovery_after_link_lost_allows_second_action() -> None:
     """After recovery to GUIDED_ALLOWED, a second LINK_LOST executes its action again."""
     lost = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)

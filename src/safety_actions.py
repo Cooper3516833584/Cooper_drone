@@ -105,8 +105,10 @@ class SafetyActionExecutor:
         elif not self._allow_disarm:
             return self._record_result(action, reason, False, "Disarm is not enabled as a safety action")
 
-        if hasattr(self._session, "force_disarm") and force:
-            return self._call_action(action, reason, self._session.force_disarm)
+        if force:
+            if hasattr(self._session, "force_disarm"):
+                return self._call_action(action, reason, self._session.force_disarm)
+            return self._record_result(action, reason, False, "Force disarm is not supported by the control layer")
         return self._call_action(action, reason, self._session.disarm)
 
     def _set_mode(self, action: str, mode: str, reason: str) -> SafetyActionResult:

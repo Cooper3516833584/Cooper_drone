@@ -14,7 +14,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["test"]
+testpaths = ["test", "tests"]
 pythonpath = ["."]
 markers = [
     "dry_run: integration tests that run root task scripts in dry-run mode",

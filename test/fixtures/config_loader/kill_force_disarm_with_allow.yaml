@@ -1,0 +1,3 @@
+safety:
+  kill_action: "force_disarm"
+  allow_force_disarm_on_kill: true

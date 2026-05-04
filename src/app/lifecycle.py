@@ -28,7 +28,8 @@ def safe_exit(
     * If *mission_was_running* is True: cancel the token, stop normal motion
       output, then execute the configured ``exit_action`` (default ``land``).
     * If *mission_was_running* is False (standby / mission=none): execute
-      ``standby_exit_action`` (default ``loiter``).
+      ``standby_exit_action`` only when it is not ``none``. The default is
+      ``none`` so standby shutdown does not change flight-controller mode.
     * When ``dry_run`` is True the connection does not exist -- all flight
       actions are skipped.
     * Every action goes through :class:`SafetyActionExecutor` so results are
@@ -62,15 +63,19 @@ def safe_exit(
 
     # 3. Execute flight actions through the safety executor.
     if not dry_run:
-        executor = SafetyActionExecutor(ctx.movement, ctx.logger)
-        executor._current_state = "shutdown"
+        # When standby + standby_exit_action=none, send no flight actions at all.
+        if not mission_was_running and exit_action == "none":
+            ctx.logger.event("safe_exit_standby_no_action")
+        else:
+            executor = SafetyActionExecutor(ctx.movement, ctx.logger)
+            executor._current_state = "shutdown"
 
-        # Always attempt stop_motion first so normal velocity output ceases.
-        _execute_action(executor, ctx, "stop", reason="safe_exit: stop motion")
+            # Always attempt stop_motion first.
+            _execute_action(executor, ctx, "stop", reason="safe_exit: stop motion")
 
-        # Then the configured exit action.
-        if exit_action and exit_action != "none":
-            _execute_action(executor, ctx, exit_action, reason=f"safe_exit: {exit_action}")
+            # Then the configured exit action.
+            if exit_action and exit_action != "none":
+                _execute_action(executor, ctx, exit_action, reason=f"safe_exit: {exit_action}")
     else:
         ctx.logger.event("safe_exit_dry_run_skipped", exit_action=exit_action)
 

@@ -15,6 +15,7 @@ from src.motion_gate import MotionGate
 from src.movement import DroneMovement
 from src.safety import SafetySupervisor
 from src.safety_actions import SafetyActionExecutor
+from src.safety_events import SafetyEventRecorder
 from src.state import VehicleState
 
 
@@ -65,10 +66,12 @@ def build_app_context(config_path: str, *, dry_run: bool | None = None) -> AppCo
     safety = None
 
     if cfg.safety.enabled:
+        recorder = SafetyEventRecorder(logger)
         safety_actions = SafetyActionExecutor(
             movement,
             logger,
             allow_force_disarm=cfg.safety.allow_force_disarm_on_kill,
+            recorder=recorder,
         )
         safety = SafetySupervisor(
             state_provider,
@@ -77,6 +80,7 @@ def build_app_context(config_path: str, *, dry_run: bool | None = None) -> AppCo
             logger,
             token.cancel,
             action_executor=safety_actions,
+            recorder=recorder,
             check_interval_s=1.0 / cfg.safety.poll_hz,
         )
         safety.start()

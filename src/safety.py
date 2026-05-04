@@ -61,6 +61,7 @@ class SafetySupervisor:
         self._lock = threading.Lock()
         self._current_state = SafetyState.NORMAL
         self._inhibit_source_state: SafetyState | None = None
+        self._inhibit_source_reason: str | None = None
         self._executed_once_keys: set[str] = set()
 
     def start(self) -> None:
@@ -137,12 +138,25 @@ class SafetySupervisor:
         if decision.inhibit_motion:
             self._motion_gate.inhibit(decision.reason)
             self._inhibit_source_state = decision.state
+            self._inhibit_source_reason = decision.reason
             self._emit(lambda r, d=decision: r.record_motion_inhibited(
                 state=d.state.value,
                 reason=d.reason,
             ))
         elif decision.state in {SafetyState.NORMAL, SafetyState.GUIDED_ALLOWED}:
+            if self._inhibit_source_state is not None and self._motion_gate.reason() == (self._inhibit_source_reason or ""):
+                self._motion_gate.clear()
+                self._logger.safety(
+                    "motion_gate_cleared",
+                    previous_state=self._inhibit_source_state.value,
+                )
+                self._emit(lambda r, d=decision, s=self._inhibit_source_state: r.record_motion_cleared(
+                    state=d.state.value,
+                    previous_state=s.value if s is not None else "",
+                    reason="safety inhibit cleared after recovery",
+                ))
             self._inhibit_source_state = None
+            self._inhibit_source_reason = None
             self._executed_once_keys.clear()
 
         if decision.failsafe_action and state_changed:

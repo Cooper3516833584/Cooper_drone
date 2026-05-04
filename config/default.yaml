@@ -36,7 +36,7 @@ safety:
   action_retry_interval_s: 1.0
   action_log_throttle_s: 1.0
   exit_action: "land"
-  standby_exit_action: "loiter"
+  standby_exit_action: "none"
 logging:
   log_dir: "logs"
   telemetry_log_hz: 5.0

@@ -325,6 +325,34 @@ class TestSafeExitStandby:
         assert "stop_motion" in movement.calls
         assert "land_nowait" not in movement.calls
 
+    def test_standby_none_sends_no_flight_actions(self) -> None:
+        """Standby + standby_exit_action=none sends zero flight actions."""
+        ctx, movement, conn, safety, logger, _token = _build_ctx(
+            dry_run=False,
+            mission_was_running=False,
+            standby_exit_action="none",
+        )
+
+        safe_exit(ctx, mission_was_running=False)
+
+        assert movement.calls == []
+        assert safety.stopped is True
+        assert conn.closed is True
+        assert logger.closed is True
+
+    def test_standby_none_logs_standby_event(self) -> None:
+        """Standby + none logs safe_exit_standby_no_action."""
+        ctx, _movement, _conn, _safety, logger, _token = _build_ctx(
+            dry_run=False,
+            mission_was_running=False,
+            standby_exit_action="none",
+        )
+
+        safe_exit(ctx, mission_was_running=False)
+
+        events = [e for e in logger.events if e["name"] == "safe_exit_standby_no_action"]
+        assert len(events) == 1
+
 
 class TestSafeExitDryRun:
     """Tests for safe_exit when dry_run is enabled (no real connection)."""

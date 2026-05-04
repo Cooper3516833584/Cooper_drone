@@ -23,6 +23,7 @@ from src.safety_events import (
     EVENT_ACTION_FAILED,
     EVENT_ACTION_SKIPPED_ONCE_KEY,
     EVENT_MISSION_CANCELLED,
+    EVENT_MOTION_CLEARED,
     EVENT_MOTION_INHIBITED,
     EVENT_STATE_TRANSITION,
     SafetyEvent,
@@ -193,6 +194,7 @@ class TestSafetyEventRecorder:
         rec.record_action_completed(state="kill", action="land", reason="r")
         rec.record_action_failed(state="kill", action="land", reason="r", error="e")
         rec.record_action_skipped(state="kill", action="land", reason="r", once_key="k")
+        rec.record_motion_cleared(state="guided_allowed", previous_state="link_lost", reason="r")
 
         types = [e.event_type for e in rec.events]
         assert EVENT_STATE_TRANSITION in types
@@ -201,6 +203,7 @@ class TestSafetyEventRecorder:
         assert EVENT_ACTION_COMPLETED in types
         assert EVENT_ACTION_FAILED in types
         assert EVENT_ACTION_SKIPPED_ONCE_KEY in types
+        assert EVENT_MOTION_CLEARED in types
 
 
 # ---------------------------------------------------------------------------

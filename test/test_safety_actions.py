@@ -112,6 +112,9 @@ class FakeControl:
     def disarm(self) -> None:
         self._capture("disarm")
 
+    def force_disarm(self) -> None:
+        self._capture("force_disarm")
+
     def _capture(self, *call: str) -> None:
         if self.fail_on == call[0]:
             raise RuntimeError(f"{call[0]} failed")
@@ -244,3 +247,31 @@ def test_executor_recorder_integration() -> None:
     completed = [e for e in recorder.events if e.event_type == EVENT_ACTION_COMPLETED]
     assert len(completed) == 1
     assert completed[0].state == "link_lost"
+
+
+def test_executor_with_allow_force_disarm_executes_force_disarm() -> None:
+    """When allow_force_disarm=True, the executor calls force_disarm on the session."""
+    control = FakeControl()
+    executor = SafetyActionExecutor(
+        control, MemorySafetyLogger(), allow_force_disarm=True,
+    )
+    result = executor.execute("force_disarm", reason="kill")
+
+    assert result.ok is True
+    assert ("force_disarm",) in control.calls
+
+
+def test_force_disarm_without_control_support_fails_even_when_allowed() -> None:
+    """Allowed force_disarm still requires an explicit force_disarm control method."""
+    class NoForceDisarmControl:
+        def disarm(self) -> None:
+            pass
+
+    result = SafetyActionExecutor(
+        NoForceDisarmControl(),
+        MemorySafetyLogger(),
+        allow_force_disarm=True,
+    ).execute("force_disarm", reason="kill")
+
+    assert result.ok is False
+    assert "not supported" in (result.error or "")

@@ -34,6 +34,7 @@ EVENT_ACTION_COMPLETED = "action_completed"
 EVENT_ACTION_FAILED = "action_failed"
 EVENT_ACTION_SKIPPED_ONCE_KEY = "action_skipped_once_key"
 EVENT_MOTION_INHIBITED = "motion_inhibited"
+EVENT_MOTION_CLEARED = "motion_cleared"
 EVENT_MISSION_CANCELLED = "mission_cancelled"
 EVENT_SUPERVISOR_ERROR = "supervisor_error"
 
@@ -140,6 +141,16 @@ class SafetyEventRecorder:
             event_type=EVENT_MOTION_INHIBITED,
             state=state,
             previous_state=None,
+            reason=reason,
+        ))
+
+    def record_motion_cleared(self, *, state: str, previous_state: str, reason: str) -> None:
+        """Convenience helper: emit a motion_cleared event."""
+        self.record(SafetyEvent(
+            timestamp_monotonic=time.monotonic(),
+            event_type=EVENT_MOTION_CLEARED,
+            state=state,
+            previous_state=previous_state,
             reason=reason,
         ))
 

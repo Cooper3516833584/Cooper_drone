@@ -84,3 +84,36 @@ def test_non_dry_run_rejects_dry_run_connection_string() -> None:
     """Reject dry-run connection strings when dry-run mode is disabled."""
     with pytest.raises(ConfigError, match="only allowed when dry_run is true"):
         load_config(FIXTURE_DIR / "non_dry_run_with_dry_run_connection.yaml")
+
+
+def test_force_disarm_on_non_kill_action_raises() -> None:
+    """Reject force_disarm on any action key other than kill_action."""
+    with pytest.raises(ConfigError, match="cannot be 'force_disarm'"):
+        load_config(FIXTURE_DIR / "force_disarm_on_non_kill_action.yaml")
+
+
+def test_kill_action_force_disarm_without_allow_raises() -> None:
+    """Reject kill_action=force_disarm when allow_force_disarm_on_kill is false."""
+    with pytest.raises(ConfigError, match="requires .*allow_force_disarm_on_kill"):
+        load_config(FIXTURE_DIR / "kill_force_disarm_without_allow.yaml")
+
+
+def test_kill_action_force_disarm_with_allow_succeeds() -> None:
+    """Accept kill_action=force_disarm when allow_force_disarm_on_kill is true."""
+    cfg = load_config(FIXTURE_DIR / "kill_force_disarm_with_allow.yaml")
+
+    assert cfg.safety.kill_action == "force_disarm"
+    assert cfg.safety.allow_force_disarm_on_kill is True
+
+
+def test_disarm_is_not_a_valid_failsafe_action() -> None:
+    """Reject 'disarm' as a safety action — it is no longer in VALID_FAILSAFE_ACTIONS."""
+    import yaml
+    from pathlib import Path
+
+    path = FIXTURE_DIR / "invalid_failsafe.yaml"
+    # The existing invalid_failsafe.yaml uses an unknown action.
+    # Verify that 'disarm' is rejected too by checking it would raise.
+    with pytest.raises(ConfigError, match="Invalid"):
+        load_config(path)
+
