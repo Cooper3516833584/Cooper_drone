@@ -37,6 +37,12 @@ def main() -> int:
             )
         ctx.logger.event("healthcheck_finished", status="ok")
         return 0
+    except KeyboardInterrupt:
+        print("healthcheck interrupted")
+        if ctx is not None:
+            ctx.token.cancel("keyboard interrupt")
+            ctx.mission_was_running = False
+        return 130
     except Exception as exc:
         print(f"healthcheck failed: {exc}")
         return 1

@@ -25,10 +25,16 @@ def main() -> int:
     ctx = None
     try:
         ctx = build_app_context(args.config, dry_run=True if args.dry_run else None)
+        ctx.mission_was_running = True
         solution_ctx = SolutionContext(ctx.cfg, ctx.movement, ctx.logger, ctx.token, ctx.state_provider)
         run_takeoff_and_hover(solution_ctx, altitude_m=args.altitude, hover_s=args.duration)
         print(f"takeoff hover finished: log_dir={ctx.logger.run_dir}")
         return 0
+    except KeyboardInterrupt:
+        print("takeoff hover interrupted")
+        if ctx is not None:
+            ctx.token.cancel("keyboard interrupt")
+        return 130
     except Exception as exc:
         print(f"takeoff hover failed: {exc}")
         return 1

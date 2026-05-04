@@ -35,6 +35,8 @@ safety:
   allow_force_disarm_on_kill: false
   action_retry_interval_s: 1.0
   action_log_throttle_s: 1.0
+  exit_action: "land"
+  standby_exit_action: "loiter"
 logging:
   log_dir: "logs"
   telemetry_log_hz: 5.0

@@ -27,6 +27,7 @@ def main() -> int:
     ctx = None
     try:
         ctx = build_app_context(args.config, dry_run=True if args.dry_run else None)
+        ctx.mission_was_running = True
         solution_ctx = SolutionContext(ctx.cfg, ctx.movement, ctx.logger, ctx.token, ctx.state_provider)
         run_waypoint_square(
             solution_ctx,
@@ -36,6 +37,11 @@ def main() -> int:
         )
         print(f"waypoint square finished: log_dir={ctx.logger.run_dir}")
         return 0
+    except KeyboardInterrupt:
+        print("waypoint square interrupted")
+        if ctx is not None:
+            ctx.token.cancel("keyboard interrupt")
+        return 130
     except Exception as exc:
         print(f"waypoint square failed: {exc}")
         return 1

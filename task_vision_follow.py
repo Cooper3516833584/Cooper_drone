@@ -28,6 +28,7 @@ def main() -> int:
     ctx = None
     try:
         ctx = build_app_context(args.config, dry_run=True if args.dry_run else None)
+        ctx.mission_was_running = True
         camera = _build_camera(ctx)
         detector = DummyDetector()
         tracker = CenteringTracker()
@@ -41,6 +42,11 @@ def main() -> int:
         run_vision_follow(solution_ctx, altitude_m=args.altitude, duration_s=args.duration)
         print(f"vision follow finished: log_dir={ctx.logger.run_dir}")
         return 0
+    except KeyboardInterrupt:
+        print("vision follow interrupted")
+        if ctx is not None:
+            ctx.token.cancel("keyboard interrupt")
+        return 130
     except Exception as exc:
         print(f"vision follow failed: {exc}")
         return 1

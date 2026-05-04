@@ -304,3 +304,146 @@ class MemorySafetyLogger:
 
     def error(self, message: str, *args) -> None:
         self.errors.append(message % args if args else message)
+
+
+# ---------------------------------------------------------------------------
+# Additional Task-09 Layer-4 cases
+# ---------------------------------------------------------------------------
+
+
+def test_once_key_skip_is_recorded_as_event() -> None:
+    """action_skipped_once_key event is emitted when a once-key is deduped."""
+    from src.safety_events import EVENT_ACTION_SKIPPED_ONCE_KEY, SafetyEventRecorder
+
+    state = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    cfg = _safety_config(link_lost_action="land")
+    recorder = SafetyEventRecorder()
+    executor = RecordingActionExecutor()
+    supervisor = SafetySupervisor(
+        lambda: state,
+        cfg,
+        MotionGate(),
+        MemorySafetyLogger(),
+        lambda reason: None,
+        action_executor=executor,
+        recorder=recorder,
+        check_interval_s=0.01,
+    )
+    decision = evaluate_safety(state, cfg, now=100.0)
+
+    supervisor._apply_decision(decision, None)
+    # Second call with same state → once-key already consumed.
+    supervisor._apply_decision(decision, SafetyState.LINK_LOST)
+
+    skipped = [e for e in recorder.events if e.event_type == EVENT_ACTION_SKIPPED_ONCE_KEY]
+    assert len(skipped) == 1
+
+
+def test_motion_inhibited_event_is_emitted() -> None:
+    """motion_inhibited event is emitted whenever inhibit_motion fires."""
+    from src.safety_events import EVENT_MOTION_INHIBITED, SafetyEventRecorder
+
+    state = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    cfg = _safety_config(link_lost_action="land")
+    recorder = SafetyEventRecorder()
+    supervisor = SafetySupervisor(
+        lambda: state,
+        cfg,
+        MotionGate(),
+        MemorySafetyLogger(),
+        lambda reason: None,
+        recorder=recorder,
+    )
+    decision = evaluate_safety(state, cfg, now=100.0)
+    supervisor._apply_decision(decision, None)
+
+    inhibited = [e for e in recorder.events if e.event_type == EVENT_MOTION_INHIBITED]
+    assert len(inhibited) >= 1
+
+
+def test_mission_cancelled_event_is_emitted_on_state_change() -> None:
+    """mission_cancelled event is emitted when cancel_mission fires."""
+    from src.safety_events import EVENT_MISSION_CANCELLED, SafetyEventRecorder
+
+    state = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    cfg = _safety_config(link_lost_action="land")
+    recorder = SafetyEventRecorder()
+    supervisor = SafetySupervisor(
+        lambda: state,
+        cfg,
+        MotionGate(),
+        MemorySafetyLogger(),
+        lambda reason: None,
+        recorder=recorder,
+    )
+    decision = evaluate_safety(state, cfg, now=100.0)
+    supervisor._apply_decision(decision, None)  # state change → cancel fires
+
+    cancelled = [e for e in recorder.events if e.event_type == EVENT_MISSION_CANCELLED]
+    assert len(cancelled) == 1
+
+
+def test_supervisor_error_event_emitted_on_loop_exception() -> None:
+    """supervisor_error event is emitted when the safety loop raises."""
+    import time
+
+    from src.safety_events import EVENT_SUPERVISOR_ERROR, SafetyEventRecorder
+
+    call_count = 0
+
+    def bad_provider() -> VehicleState:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("state fetch failed")
+        return VehicleState(
+            last_heartbeat_ts=time.time(),
+            mode="GUIDED",
+            rc_last_update_ts=time.time(),
+        )
+
+    cfg = _safety_config()
+    recorder = SafetyEventRecorder()
+    supervisor = SafetySupervisor(
+        bad_provider,
+        cfg,
+        MotionGate(),
+        MemorySafetyLogger(),
+        lambda reason: None,
+        recorder=recorder,
+        check_interval_s=0.01,
+    )
+    supervisor.start()
+    # Give the loop time to execute the bad call and then recover.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        errors = [e for e in recorder.events if e.event_type == EVENT_SUPERVISOR_ERROR]
+        if errors:
+            break
+        time.sleep(0.01)
+    supervisor.stop()
+
+    errors = [e for e in recorder.events if e.event_type == EVENT_SUPERVISOR_ERROR]
+    assert len(errors) >= 1
+    assert errors[0].error is not None
+
+
+def test_recovery_after_link_lost_allows_second_action() -> None:
+    """After recovery to GUIDED_ALLOWED, a second LINK_LOST executes its action again."""
+    lost = VehicleState(last_heartbeat_ts=0.0, mode="GUIDED", rc_last_update_ts=99.5)
+    recovered = VehicleState(last_heartbeat_ts=100.0, mode="GUIDED", rc_last_update_ts=100.0)
+    cfg = _safety_config(link_lost_action="land")
+    executor = RecordingActionExecutor()
+    supervisor = _supervisor(lambda: lost, cfg, MotionGate(), list().append, executor)
+
+    lost_decision = evaluate_safety(lost, cfg, now=100.0)
+    recovered_decision = evaluate_safety(recovered, cfg, now=100.0, previous_state=SafetyState.LINK_LOST)
+    lost_again_decision = evaluate_safety(lost, cfg, now=110.0, previous_state=recovered_decision.state)
+
+    supervisor._apply_decision(lost_decision, None)
+    supervisor._apply_decision(recovered_decision, SafetyState.LINK_LOST)
+    supervisor._apply_decision(lost_again_decision, recovered_decision.state)
+
+    assert len(executor.calls) == 2
+    assert executor.calls[0] == ("land", "heartbeat link lost")
+    assert executor.calls[1] == ("land", "heartbeat link lost")

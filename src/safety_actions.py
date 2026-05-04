@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.safety_events import SafetyEventRecorder
 
 
 @dataclass(frozen=True)
@@ -29,12 +32,17 @@ class SafetyActionExecutor:
         *,
         allow_disarm: bool = False,
         allow_force_disarm: bool = False,
+        recorder: "SafetyEventRecorder | None" = None,
     ) -> None:
         """Create an executor around the existing control or movement layer."""
         self._session = session
         self._logger = logger
         self._allow_disarm = allow_disarm
         self._allow_force_disarm = allow_force_disarm
+        self._recorder = recorder
+        # _current_state is set by the supervisor before calling execute()
+        # so that events carry the triggering safety state.
+        self._current_state: str = "unknown"
 
     def execute(self, action: str, *, reason: str) -> SafetyActionResult:
         """Execute one named safety action and return a structured result."""
@@ -130,7 +138,28 @@ class SafetyActionExecutor:
             timestamp_monotonic=time.monotonic(),
         )
         self._log_result(result)
+        self._emit_action_event(result)
         return result
+
+    def _emit_action_event(self, result: SafetyActionResult) -> None:
+        if self._recorder is None:
+            return
+        try:
+            if result.ok:
+                self._recorder.record_action_completed(
+                    state=self._current_state,
+                    action=result.action,
+                    reason=result.reason,
+                )
+            else:
+                self._recorder.record_action_failed(
+                    state=self._current_state,
+                    action=result.action,
+                    reason=result.reason,
+                    error=result.error or "",
+                )
+        except Exception:  # noqa: BLE001
+            pass  # recorder errors must never affect safety actions
 
     def _log_result(self, result: SafetyActionResult) -> None:
         fields = {

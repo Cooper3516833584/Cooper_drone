@@ -155,3 +155,92 @@ def _safety_config(**overrides) -> SafetyConfig:
     }
     values.update(overrides)
     return SafetyConfig(**values)
+
+
+# ---------------------------------------------------------------------------
+# Additional Task-09 Layer-3 cases
+# ---------------------------------------------------------------------------
+
+
+def test_action_result_contains_action_reason_fields() -> None:
+    """SafetyActionResult carries action, reason, ok, and error fields."""
+    from src.safety_actions import SafetyActionResult
+
+    result = SafetyActionResult(
+        action="land",
+        reason="link lost",
+        ok=True,
+        error=None,
+    )
+    assert result.action == "land"
+    assert result.reason == "link lost"
+    assert result.ok is True
+    assert result.error is None
+
+
+def test_failed_action_result_contains_error_field() -> None:
+    """A failed action result carries a non-None error field."""
+    control = FakeControl(fail_on="stop_motion")
+    result = SafetyActionExecutor(control, MemorySafetyLogger()).execute("stop", reason="kill")
+    assert result.ok is False
+    assert result.error is not None
+    assert result.action == "stop"
+    assert result.reason == "kill"
+
+
+def test_force_disarm_requires_explicit_allow_force_disarm_flag() -> None:
+    """force_disarm must be gated behind allow_force_disarm=True."""
+    control = FakeControl()
+    # Without opt-in, force_disarm must be rejected.
+    executor_no = SafetyActionExecutor(control, MemorySafetyLogger(), allow_force_disarm=False)
+    result_no = executor_no.execute("force_disarm", reason="kill")
+    assert result_no.ok is False
+    assert "not enabled" in (result_no.error or "").lower()
+
+    # With opt-in, call should proceed.
+    executor_yes = SafetyActionExecutor(control, MemorySafetyLogger(), allow_force_disarm=True)
+    result_yes = executor_yes.execute("force_disarm", reason="kill")
+    assert result_yes.ok is True
+
+
+def test_disarm_requires_explicit_allow_disarm_flag() -> None:
+    """disarm must be gated behind allow_disarm=True."""
+    control = FakeControl()
+    executor = SafetyActionExecutor(control, MemorySafetyLogger(), allow_disarm=False)
+    result = executor.execute("disarm", reason="kill")
+    assert result.ok is False
+    assert control.calls == []
+
+
+def test_unsupported_action_name_returns_failed_result() -> None:
+    """An unrecognised action name returns ok=False with an error message."""
+    control = FakeControl()
+    result = SafetyActionExecutor(control, MemorySafetyLogger()).execute(
+        "self_destruct", reason="unknown"
+    )
+    assert result.ok is False
+    assert result.error is not None
+
+
+def test_rtl_falls_back_to_set_mode_when_no_rtl_method() -> None:
+    """RTL action falls back to set_mode_nowait when rtl() is absent."""
+    control = FakeControl()
+    result = SafetyActionExecutor(control, MemorySafetyLogger()).rtl(reason="link_lost")
+    assert result.ok is True
+    assert ("set_mode_nowait", "RTL") in control.calls
+
+
+def test_executor_recorder_integration() -> None:
+    """SafetyActionExecutor emits structured events via recorder when provided."""
+    from src.safety_events import EVENT_ACTION_COMPLETED, SafetyEventRecorder
+
+    control = FakeControl()
+    recorder = SafetyEventRecorder()
+    executor = SafetyActionExecutor(control, MemorySafetyLogger(), recorder=recorder)
+    executor._current_state = "link_lost"
+    result = executor.execute("stop", reason="hb timeout")
+
+    assert result.ok is True
+    completed = [e for e in recorder.events if e.event_type == EVENT_ACTION_COMPLETED]
+    assert len(completed) == 1
+    assert completed[0].state == "link_lost"

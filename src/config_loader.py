@@ -16,6 +16,8 @@ SAFETY_ACTION_KEYS = (
     "link_lost_action",
     "revoke_action",
     "rc_stale_action",
+    "exit_action",
+    "standby_exit_action",
 )
 
 
@@ -71,6 +73,8 @@ class SafetyConfig:
     action_retry_interval_s: float = 1.0
     action_log_throttle_s: float = 1.0
     poll_hz: float = 10.0
+    exit_action: str = "land"
+    standby_exit_action: str = "loiter"
 
 
 @dataclass

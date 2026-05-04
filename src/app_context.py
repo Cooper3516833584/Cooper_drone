@@ -31,16 +31,13 @@ class AppContext:
     token: CancellationToken
     safety: SafetySupervisor | None
     state_provider: Callable[[], VehicleState]
+    mission_was_running: bool = False
 
     def close(self) -> None:
-        """Stop background services and close runtime resources."""
-        if self.safety is not None:
-            self.safety.stop()
-            self.safety = None
-        if self.connection is not None:
-            self.connection.close()
-            self.connection = None
-        self.logger.close()
+        """Perform safe shutdown actions and close runtime resources."""
+        from src.app.lifecycle import safe_exit
+
+        safe_exit(self, mission_was_running=self.mission_was_running)
 
 
 def build_app_context(config_path: str, *, dry_run: bool | None = None) -> AppContext:
