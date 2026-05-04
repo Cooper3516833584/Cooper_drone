@@ -1,5 +1,5 @@
 # Cooper_drone runtime + local test dependencies
-# Python: >=3.11
+# Python: >=3.10
 
 pymavlink>=2.4.41
 PyYAML>=6.0.1
