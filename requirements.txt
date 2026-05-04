@@ -1,0 +1,10 @@
+# Cooper_drone runtime + local test dependencies
+# Python: >=3.11
+
+pymavlink>=2.4.41
+PyYAML>=6.0.1
+Flask>=3.0.0
+opencv-python-headless>=4.10.0.84
+
+# Development / test
+pytest>=8.2.0
